@@ -3,19 +3,55 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
-import { QuizMode, Word, WordSet, MODE_LABELS } from '@/lib/types';
+import {
+  PROFICIENCY_LABELS,
+  PROFICIENCY_LEVELS,
+  QuizMode,
+  Word,
+  WordProficiency,
+  WordSet,
+  MODE_LABELS,
+} from '@/lib/types';
 import NavHeader from '@/components/NavHeader';
 import FlashCard from '@/components/FlashCard';
 
 const FRONT_IS_WORD: QuizMode[] = ['en_to_jp', 'ko_to_gen'];
 
-function shuffle<T>(arr: T[]): T[] {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
+// 重要度・難易度・習熟度から出題の重みを計算する。
+// - importance(重要度 1〜5): 高いほど出やすい
+// - difficulty(難易度 1〜5、未判定は3扱い): 高いほど出やすい
+// - proficiencyLevel(習熟度 1〜5、未評価は1=最も苦手扱い): 低いほど出やすい(x2で重視)
+function calcWeight(word: Word, proficiencyLevel: number): number {
+  const difficulty = word.difficulty ?? 3;
+  const proficiencyFactor = (6 - proficiencyLevel) * 2;
+  const weight = word.importance + difficulty + proficiencyFactor;
+  return Math.max(weight, 1);
+}
+
+function pickWeightedIndex(weights: number[], total: number): number {
+  let r = Math.random() * total;
+  for (let i = 0; i < weights.length; i++) {
+    if (r < weights[i]) return i;
+    r -= weights[i];
   }
-  return a;
+  return weights.length - 1;
+}
+
+// 重み付きの重複ありサンプリングでcount件分の出題順(インデックス配列)を作る。
+// 同じ単語が連続しないよう簡易的に1回だけ引き直す。
+function buildWeightedQueue(weights: number[], count: number): number[] {
+  const total = weights.reduce((a, b) => a + b, 0);
+  const queue: number[] = [];
+  let prevIndex = -1;
+  for (let i = 0; i < count; i++) {
+    let idx = pickWeightedIndex(weights, total);
+    if (idx === prevIndex && weights.length > 1) {
+      idx = pickWeightedIndex(weights, total);
+    }
+    queue.push(idx);
+    prevIndex = idx;
+  }
+  return queue;
 }
 
 export default function QuizPage() {
@@ -26,8 +62,10 @@ export default function QuizPage() {
 
   const [set, setSet] = useState<WordSet | null>(null);
   const [words, setWords] = useState<Word[]>([]);
+  const [proficiencyMap, setProficiencyMap] = useState<Map<string, number>>(new Map());
+  const [queue, setQueue] = useState<number[]>([]);
   const [loading, setLoading] = useState(true);
-  const [index, setIndex] = useState(0);
+  const [pos, setPos] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [results, setResults] = useState<{ correct: number; wrong: number }>({
     correct: 0,
@@ -37,35 +75,63 @@ export default function QuizPage() {
 
   useEffect(() => {
     (async () => {
-      const [{ data: setData }, { data: wordData }] = await Promise.all([
-        supabase.from('word_sets').select('*').eq('id', setId).single(),
-        supabase.from('words').select('*').eq('set_id', setId),
-      ]);
+      const { data: setData } = await supabase
+        .from('word_sets')
+        .select('*')
+        .eq('id', setId)
+        .single();
+      const { data: wordData } = await supabase
+        .from('words')
+        .select('*')
+        .eq('set_id', setId);
+
       if (setData) setSet(setData as WordSet);
-      if (wordData) setWords(shuffle(wordData as Word[]));
+
+      const wordList = (wordData as Word[]) ?? [];
+      setWords(wordList);
+
+      let profMap = new Map<string, number>();
+      if (wordList.length > 0) {
+        const { data: profData } = await supabase
+          .from('word_proficiency')
+          .select('*')
+          .in(
+            'word_id',
+            wordList.map((w) => w.id)
+          );
+        (profData as WordProficiency[] | null)?.forEach((p) => {
+          profMap.set(p.word_id, p.level);
+        });
+      }
+      setProficiencyMap(profMap);
+
+      const weights = wordList.map((w) => calcWeight(w, profMap.get(w.id) ?? 1));
+      setQueue(wordList.length ? buildWeightedQueue(weights, wordList.length) : []);
+
       setLoading(false);
     })();
   }, [setId]);
 
-  const current = words[index];
+  const current = words[queue[pos]];
   const frontIsWord = FRONT_IS_WORD.includes(mode);
 
   const frontText = current ? (frontIsWord ? current.word : current.mean) : '';
   const backText = current ? (frontIsWord ? current.mean : current.word) : '';
 
   const progressPct = useMemo(
-    () => (words.length ? Math.round(((index + 1) / words.length) * 100) : 0),
-    [index, words.length]
+    () => (queue.length ? Math.round(((pos + 1) / queue.length) * 100) : 0),
+    [pos, queue.length]
   );
 
-  async function recordAndNext(isCorrect: boolean) {
+  async function recordAndNext(level: number) {
     if (!current) return;
+    const isCorrect = level >= 4;
     setResults((r) => ({
       correct: r.correct + (isCorrect ? 1 : 0),
       wrong: r.wrong + (isCorrect ? 0 : 1),
     }));
 
-    // 学習ログを記録(失敗しても学習体験は止めない)
+    // 学習ログを記録し、単語ごとの現在の習熟度も更新する(失敗しても学習体験は止めない)
     supabase
       .from('study_logs')
       .insert({
@@ -73,20 +139,36 @@ export default function QuizPage() {
         set_id: setId,
         mode,
         is_correct: isCorrect,
+        level,
       })
       .then(() => {});
 
-    if (index + 1 >= words.length) {
+    supabase
+      .from('word_proficiency')
+      .upsert(
+        { word_id: current.id, level, updated_at: new Date().toISOString() },
+        { onConflict: 'word_id' }
+      )
+      .then(() => {});
+
+    setProficiencyMap((m) => {
+      const next = new Map(m);
+      next.set(current.id, level);
+      return next;
+    });
+
+    if (pos + 1 >= queue.length) {
       setFinished(true);
     } else {
-      setIndex((i) => i + 1);
+      setPos((p) => p + 1);
       setFlipped(false);
     }
   }
 
   function restart() {
-    setWords((w) => shuffle(w));
-    setIndex(0);
+    const weights = words.map((w) => calcWeight(w, proficiencyMap.get(w.id) ?? 1));
+    setQueue(words.length ? buildWeightedQueue(weights, words.length) : []);
+    setPos(0);
     setFlipped(false);
     setResults({ correct: 0, wrong: 0 });
     setFinished(false);
@@ -111,13 +193,13 @@ export default function QuizPage() {
 
       {loading && <p className="text-gray-400">読み込み中...</p>}
 
-      {!loading && words.length === 0 && (
+      {!loading && queue.length === 0 && (
         <div className="rounded-xl border border-dashed border-gray-300 bg-white/60 p-6 text-center text-gray-500">
           この単語帳にはまだ単語が登録されていません。
         </div>
       )}
 
-      {!loading && words.length > 0 && !finished && (
+      {!loading && queue.length > 0 && !finished && current && (
         <>
           <div className="mb-4 h-2 w-full overflow-hidden rounded-full bg-gray-200">
             <div
@@ -126,7 +208,7 @@ export default function QuizPage() {
             />
           </div>
           <p className="mb-3 text-center text-sm text-gray-500">
-            {index + 1} / {words.length}
+            {pos + 1} / {queue.length}
           </p>
 
           <FlashCard
@@ -139,19 +221,28 @@ export default function QuizPage() {
           />
 
           {flipped ? (
-            <div className="mt-6 grid grid-cols-2 gap-3">
-              <button
-                onClick={() => recordAndNext(false)}
-                className="rounded-xl bg-red-500 py-3 font-semibold text-white transition active:scale-95"
-              >
-                ✕ わからなかった
-              </button>
-              <button
-                onClick={() => recordAndNext(true)}
-                className="rounded-xl bg-green-600 py-3 font-semibold text-white transition active:scale-95"
-              >
-                ○ わかった
-              </button>
+            <div className="mt-6">
+              <p className="mb-2 text-center text-xs text-gray-400">
+                習熟度を5段階で自己評価してください
+              </p>
+              <div className="grid grid-cols-5 gap-1.5">
+                {PROFICIENCY_LEVELS.map((level) => (
+                  <button
+                    key={level}
+                    onClick={() => recordAndNext(level)}
+                    className={`rounded-xl py-3 text-xs font-semibold text-white transition active:scale-95 ${
+                      level <= 2
+                        ? 'bg-red-500'
+                        : level === 3
+                        ? 'bg-amber-500'
+                        : 'bg-green-600'
+                    }`}
+                  >
+                    <span className="block text-base">{level}</span>
+                    {PROFICIENCY_LABELS[level]}
+                  </button>
+                ))}
+              </div>
             </div>
           ) : (
             <p className="mt-6 text-center text-sm text-gray-400">
@@ -165,11 +256,9 @@ export default function QuizPage() {
         <div className="rounded-2xl bg-white p-6 text-center shadow-sm ring-1 ring-black/5">
           <h2 className="mb-2 text-xl font-bold">おつかれさまでした！</h2>
           <p className="mb-4 text-gray-500">
-            正解 {results.correct} / {words.length}
-            (正答率{' '}
-            {words.length
-              ? Math.round((results.correct / words.length) * 100)
-              : 0}
+            習熟度4以上 {results.correct} / {queue.length}
+            (良好率{' '}
+            {queue.length ? Math.round((results.correct / queue.length) * 100) : 0}
             %)
           </p>
           <div className="flex justify-center gap-3">

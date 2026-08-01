@@ -3,7 +3,9 @@
 
 // 注: gemini-2.0-flash は廃止(シャットダウン済み)のため gemini-2.5-flash をデフォルトに変更。
 // GEMINI_MODEL 環境変数で上書き可能。
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+// 注: gemini-2.0-flash は廃止(シャットダウン済み)、gemini-2.5-flash も新規ユーザー向け提供終了のため
+// 現行の安定版 gemini-3.6-flash をデフォルトに変更。GEMINI_MODEL 環境変数で上書き可能。
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 
 export interface DifficultyInput {
   word: string;
@@ -36,7 +38,12 @@ export async function getDifficultyFromGemini(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0, maxOutputTokens: 8 },
+      generationConfig: {
+        // Gemini 3系はデフォルトで「thinking」が有効(最大8192トークン)なため、
+        // thinkingLevelをminimalにしないとmaxOutputTokensが思考に消費され本文が空になる。
+        thinkingConfig: { thinkingLevel: 'minimal' },
+        maxOutputTokens: 32,
+      },
     }),
   });
 

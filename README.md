@@ -14,6 +14,10 @@
   - 日別の学習数・正答率の推移
   - 単語帳ごとの正答率
   - 出題モードごとの正答率
+- Gemini APIによる単語の難易度自動判定(1〜5)、管理者画面で難易度・重要度によるソート
+- 出題頻度の自動調整: 「重要度」「難易度」「5段階の自己評価による習熟度」に応じて、出やすさが変わる重み付き出題
+  - 苦手(習熟度が低い)・重要・難しい単語ほど出やすくなる
+  - 出題画面では○✕ではなく5段階(1:全然だめ 〜 5:バッチリ)で自己評価する
 
 ## セットアップ手順
 
@@ -23,10 +27,15 @@
 2. プロジェクト作成後、左メニューの **SQL Editor** を開く
 3. このリポジトリの `supabase/schema.sql` の内容を貼り付けて実行
    - `word_sets` / `words` / `study_logs` の3テーブルが作成されます
-4. **Project Settings > API** から以下をコピー
+4. 続けて `supabase/migration_2_gemini_proficiency.sql` の内容も同じくSQL Editorで実行
+   - `words`に`difficulty`(難易度)・`importance`(重要度)列を追加
+   - `study_logs`に`level`(5段階評価)列を追加
+   - 単語ごとの現在の習熟度を持つ`word_proficiency`テーブルを作成
+5. **Project Settings > API** から以下をコピー
    - Project URL → `NEXT_PUBLIC_SUPABASE_URL`
    - `anon` `public` キー → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    - `service_role` キー → `SUPABASE_SERVICE_ROLE_KEY`(絶対に公開しない)
+6. [Google AI Studio](https://aistudio.google.com/app/apikey) でGemini APIキーを発行 → `GEMINI_API_KEY`
 
 ### 2. 環境変数を設定
 

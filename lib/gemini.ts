@@ -1,7 +1,9 @@
 // Gemini APIを使って単語の難易度(1〜5)を判定するヘルパー。
 // このファイルはサーバー側(APIルート)からのみ呼び出すこと。GEMINI_API_KEYを外部に渡さない。
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+// 注: gemini-2.0-flash は廃止(シャットダウン済み)のため gemini-2.5-flash をデフォルトに変更。
+// GEMINI_MODEL 環境変数で上書き可能。
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
 export interface DifficultyInput {
   word: string;

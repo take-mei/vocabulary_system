@@ -201,8 +201,10 @@ export default function AdminPage() {
       if (!res.ok) {
         setBulkStatus(`エラー: ${json.error ?? '判定に失敗しました'}`);
       } else {
+        const errSuffix =
+          json.failed > 0 && json.firstError ? ` / 原因: ${json.firstError}` : '';
         setBulkStatus(
-          `${json.updated}件判定完了(失敗${json.failed}件 / 全${json.total}件)`
+          `${json.updated}件判定完了(失敗${json.failed}件 / 全${json.total}件)${errSuffix}`
         );
         await loadWords(selectedSetId);
       }

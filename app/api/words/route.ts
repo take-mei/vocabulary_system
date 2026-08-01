@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { set_id, word, mean, remarks } = body;
+  const { set_id, word, mean, remarks, importance } = body;
 
   if (!set_id || !word || !mean) {
     return NextResponse.json(
@@ -30,9 +30,20 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const importanceValue =
+    typeof importance === 'number' && importance >= 1 && importance <= 5
+      ? importance
+      : 3;
+
   const { data, error } = await supabaseAdmin
     .from('words')
-    .insert({ set_id, word, mean, remarks: remarks ?? null })
+    .insert({
+      set_id,
+      word,
+      mean,
+      remarks: remarks ?? null,
+      importance: importanceValue,
+    })
     .select()
     .single();
 

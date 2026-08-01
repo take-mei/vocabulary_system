@@ -67,6 +67,7 @@ export async function POST(req: NextRequest) {
 
     let updated = 0;
     let failed = 0;
+    let firstError: string | null = null;
 
     // Gemini APIのレート制限を考慮し、順番に(並列にせず)処理する
     for (const w of words) {
@@ -82,12 +83,20 @@ export async function POST(req: NextRequest) {
           .eq('id', w.id);
         if (updateError) throw updateError;
         updated += 1;
-      } catch {
+      } catch (e: any) {
         failed += 1;
+        const msg = e?.message ?? String(e);
+        if (!firstError) firstError = msg;
+        console.error(`難易度判定失敗 (word_id=${w.id}, word=${w.word}):`, msg);
       }
     }
 
-    return NextResponse.json({ updated, failed, total: words.length });
+    return NextResponse.json({
+      updated,
+      failed,
+      total: words.length,
+      firstError, // 失敗時の原因調査用(失敗が0件ならnull)
+    });
   } catch (e: any) {
     return NextResponse.json(
       { error: e?.message ?? '難易度判定に失敗しました' },

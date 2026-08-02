@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { WordSet, MODES_BY_TYPE, MODE_LABELS } from '@/lib/types';
 import NavHeader from '@/components/NavHeader';
+import { speak, isSpeechSupported } from '@/lib/speech';
 
 export default function HomePage() {
   const router = useRouter();
@@ -15,6 +16,7 @@ export default function HomePage() {
   // 翻訳機
   const [inputWord, setInputWord] = useState('');
   const [translatedMean, setTranslatedMean] = useState('');
+  const [translatedPhonetic, setTranslatedPhonetic] = useState('');
   const [translating, setTranslating] = useState(false);
   const [translateError, setTranslateError] = useState<string | null>(null);
 
@@ -45,6 +47,7 @@ export default function HomePage() {
     setTranslating(true);
     setTranslateError(null);
     setTranslatedMean('');
+    setTranslatedPhonetic('');
     try {
       const res = await fetch('/api/translate', {
         method: 'POST',
@@ -56,6 +59,7 @@ export default function HomePage() {
         setTranslateError(json.error ?? '翻訳に失敗しました');
       } else {
         setTranslatedMean(json.mean);
+        setTranslatedPhonetic(json.phonetic ?? '');
       }
     } catch {
       setTranslateError('通信エラーが発生しました');
@@ -77,18 +81,46 @@ export default function HomePage() {
           word: inputWord.trim(),
           mean: translatedMean.trim(),
           remarks: remarks.trim() || null,
+          phonetic: translatedPhonetic.trim() || null,
           importance,
         }),
       });
       const json = await res.json();
       if (!res.ok) {
         setAddStatus(`エラー: ${json.error ?? '追加に失敗しました'}`);
-      } else {
-        setAddStatus(`「${inputWord.trim()}」を「${selectedSet.name}」に追加しました`);
-        setInputWord('');
-        setTranslatedMean('');
-        setRemarks('');
-        setImportance(3);
+        return;
+      }
+
+      setAddStatus(`「${inputWord.trim()}」を「${selectedSet.name}」に追加しました(難易度を判定中...)`);
+      const addedWord = inputWord.trim();
+      const addedWordId = json.data?.id as string | undefined;
+      setInputWord('');
+      setTranslatedMean('');
+      setTranslatedPhonetic('');
+      setRemarks('');
+      setImportance(3);
+
+      // 追加した単語の難易度をその場でGeminiに判定させる(管理者画面で改めて実行しなくてよいように)
+      if (addedWordId) {
+        try {
+          const diffRes = await fetch('/api/difficulty', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ word_id: addedWordId }),
+          });
+          const diffJson = await diffRes.json();
+          if (diffRes.ok) {
+            setAddStatus(
+              `「${addedWord}」を「${selectedSet.name}」に追加しました(難易度: ${diffJson.data?.difficulty ?? '?'})`
+            );
+          } else {
+            setAddStatus(
+              `「${addedWord}」を追加しました(難易度判定は失敗: ${diffJson.error ?? '不明なエラー'})`
+            );
+          }
+        } catch {
+          setAddStatus(`「${addedWord}」を追加しました(難易度判定は通信エラーで失敗)`);
+        }
       }
     } catch {
       setAddStatus('通信エラーが発生しました');
@@ -98,6 +130,7 @@ export default function HomePage() {
   }
 
   const modes = selectedSet ? MODES_BY_TYPE[selectedSet.type] : [];
+  const speechLang = selectedSet?.type === 'english' ? 'en-US' : 'ja-JP';
 
   return (
     <main>
@@ -131,6 +164,7 @@ export default function HomePage() {
                 setSelectedSetId(e.target.value);
                 setInputWord('');
                 setTranslatedMean('');
+                setTranslatedPhonetic('');
                 setTranslateError(null);
                 setAddStatus(null);
               }}
@@ -177,6 +211,7 @@ export default function HomePage() {
                   onChange={(e) => {
                     setInputWord(e.target.value);
                     setTranslatedMean('');
+                    setTranslatedPhonetic('');
                     setTranslateError(null);
                     setAddStatus(null);
                   }}
@@ -189,6 +224,17 @@ export default function HomePage() {
                     }
                   }}
                 />
+                {isSpeechSupported() && (
+                  <button
+                    type="button"
+                    onClick={() => speak(inputWord, speechLang)}
+                    disabled={!inputWord.trim()}
+                    title="発音を再生"
+                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm disabled:opacity-40"
+                  >
+                    🔊
+                  </button>
+                )}
                 <button
                   onClick={handleTranslate}
                   disabled={translating || !inputWord.trim()}
@@ -212,6 +258,20 @@ export default function HomePage() {
                     onChange={(e) => setTranslatedMean(e.target.value)}
                     className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
                   />
+
+                  {selectedSet.type === 'english' && (
+                    <>
+                      <label className="mb-1 block text-xs font-semibold text-gray-500">
+                        発音記号(編集できます)
+                      </label>
+                      <input
+                        value={translatedPhonetic}
+                        onChange={(e) => setTranslatedPhonetic(e.target.value)}
+                        placeholder="例: /ˈæpəl/"
+                        className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                      />
+                    </>
+                  )}
 
                   <label className="mb-1 block text-xs font-semibold text-gray-500">
                     備考(任意)

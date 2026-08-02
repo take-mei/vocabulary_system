@@ -16,6 +16,8 @@ import NavHeader from '@/components/NavHeader';
 import FlashCard from '@/components/FlashCard';
 
 const FRONT_IS_WORD: QuizMode[] = ['en_to_jp', 'ko_to_gen'];
+// カードの反転アニメーション時間(CSS globals.cssの.card-flip-innerと合わせる)
+const FLIP_ANIMATION_MS = 500;
 
 // 重要度・難易度・習熟度から出題の重みを計算する。
 // - importance(重要度 1〜5): 高いほど出やすい
@@ -67,6 +69,7 @@ export default function QuizPage() {
   const [loading, setLoading] = useState(true);
   const [pos, setPos] = useState(0);
   const [flipped, setFlipped] = useState(false);
+  const [transitioning, setTransitioning] = useState(false);
   const [results, setResults] = useState<{ correct: number; wrong: number }>({
     correct: 0,
     wrong: 0,
@@ -123,8 +126,9 @@ export default function QuizPage() {
     [pos, queue.length]
   );
 
+// カードの反転アニメーション時間(CSS globals.cssの.card-flip-innerと合わせる)
   async function recordAndNext(level: number) {
-    if (!current) return;
+    if (!current || transitioning) return;
     const isCorrect = level >= 4;
     setResults((r) => ({
       correct: r.correct + (isCorrect ? 1 : 0),
@@ -157,12 +161,19 @@ export default function QuizPage() {
       return next;
     });
 
-    if (pos + 1 >= queue.length) {
-      setFinished(true);
-    } else {
-      setPos((p) => p + 1);
-      setFlipped(false);
-    }
+    // 先にカードを裏返す(このときはまだ現在の単語のまま)。
+    // 単語の切り替えはアニメーションが完全に終わってから行う。
+    // 同時に切り替えると、裏返っている途中で次の単語の答えが見えてしまうため。
+    setTransitioning(true);
+    setFlipped(false);
+    setTimeout(() => {
+      if (pos + 1 >= queue.length) {
+        setFinished(true);
+      } else {
+        setPos((p) => p + 1);
+      }
+      setTransitioning(false);
+    }, FLIP_ANIMATION_MS);
   }
 
   function restart() {
@@ -170,6 +181,7 @@ export default function QuizPage() {
     setQueue(words.length ? buildWeightedQueue(weights, words.length) : []);
     setPos(0);
     setFlipped(false);
+    setTransitioning(false);
     setResults({ correct: 0, wrong: 0 });
     setFinished(false);
   }
@@ -217,7 +229,11 @@ export default function QuizPage() {
             backText={backText}
             remarks={current.remarks}
             flipped={flipped}
-            onFlip={() => setFlipped((f) => !f)}
+            onFlip={() => {
+              if (!transitioning) setFlipped((f) => !f);
+            }}
+            wordSide={frontIsWord ? 'front' : 'back'}
+            speechLang={set?.type === 'english' ? 'en-US' : 'ja-JP'}
           />
 
           {flipped ? (

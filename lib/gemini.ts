@@ -134,29 +134,45 @@ export interface TranslateInput {
   type: 'english' | 'kobun';
 }
 
-// 単語(英単語 or 古文単語)を入力すると、意味(mean)を自動生成する翻訳機能。
-export async function getMeaningFromGemini(
+export interface TranslateResult {
+  mean: string;
+  phonetic: string | null; // 発音記号(IPA)。英単語のみ生成。古文単語は常にnull
+}
+
+// 単語(英単語 or 古文単語)を入力すると、意味(mean)と(英単語なら)発音記号を自動生成する翻訳機能。
+export async function getTranslationFromGemini(
   input: TranslateInput
-): Promise<string> {
+): Promise<TranslateResult> {
   const prompt =
     input.type === 'english'
       ? `あなたは日本の高校生向け英単語学習アプリの翻訳AIです。
-次の英単語の意味を、日本語で簡潔に(単語帳の「意味」欄に入る程度、10〜20文字程度)出力してください。
-複数の意味がある場合は代表的なものを「、」区切りで2〜3個まで挙げてください。
+次の英単語について、JSON形式で出力してください。
+{"mean": "日本語の意味(単語帳の「意味」欄に入る程度、10〜20文字程度。複数ある場合は代表的なものを「、」区切りで2〜3個)", "phonetic": "国際音声記号(IPA)による発音記号。スラッシュ(/.../)で囲む"}
 英単語: ${input.word}
-出力は意味の日本語のみとし、英単語の繰り返しや説明文、記号、引用符、改行は一切含めないでください。`
+出力は上記のJSONオブジェクトのみとし、コードブロック記号(\`\`\`)や説明文、前後の余計な文字は一切含めないでください。`
       : `あなたは日本の高校生向け古文単語学習アプリの翻訳AIです。
-次の古文単語(古典日本語)の現代語訳を、日本語で簡潔に(単語帳の「意味」欄に入る程度、10〜20文字程度)出力してください。
-複数の意味がある場合は代表的なものを「、」区切りで2〜3個まで挙げてください。
+次の古文単語(古典日本語)について、JSON形式で出力してください。
+{"mean": "現代語訳(単語帳の「意味」欄に入る程度、10〜20文字程度。複数ある場合は代表的なものを「、」区切りで2〜3個)"}
 古文単語: ${input.word}
-出力は現代語訳の日本語のみとし、古文単語の繰り返しや説明文、記号、引用符、改行は一切含めないでください。`;
+出力は上記のJSONオブジェクトのみとし、コードブロック記号(\`\`\`)や説明文、前後の余計な文字は一切含めないでください。`;
 
-  const text = await callGeminiText(prompt, 64);
-  const mean = text.trim().replace(/^["「『]|["」』]$/g, '');
+  const text = await callGeminiText(prompt, 128);
+  const cleaned = text.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
 
+  let parsed: { mean?: string; phonetic?: string };
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    throw new Error(`Geminiの応答をJSONとして読み取れませんでした: "${text}"`);
+  }
+
+  const mean = (parsed.mean ?? '').trim().replace(/^["「『]|["」』]$/g, '');
   if (!mean) {
     throw new Error('Geminiの応答から意味を読み取れませんでした');
   }
 
-  return mean;
+  const phonetic =
+    input.type === 'english' && parsed.phonetic ? parsed.phonetic.trim() : null;
+
+  return { mean, phonetic };
 }

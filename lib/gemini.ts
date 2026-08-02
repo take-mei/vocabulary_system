@@ -49,30 +49,17 @@ function parseRetryDelayMs(errText: string): number | null {
   return null;
 }
 
-export interface DifficultyInput {
-  word: string;
-  mean: string;
-  type: 'english' | 'kobun';
-}
-
-export async function getDifficultyFromGemini(
-  input: DifficultyInput,
+// Gemini APIへの共通呼び出し処理(レート制限待ち・429自動リトライ込み)。
+// prompt(指示文)とmaxOutputTokensだけ渡せば、応答テキストを返す。
+async function callGeminiText(
+  prompt: string,
+  maxOutputTokens: number,
   attempt = 0
-): Promise<number> {
+): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error('環境変数 GEMINI_API_KEY が設定されていません');
   }
-
-  const kind = input.type === 'english' ? '英単語' : '古文単語';
-  const prompt = `あなたは日本の高校生向け${kind}学習アプリの難易度判定AIです。
-次の${kind}について、日本の高校生が覚える際の難易度を1〜5の整数で判定してください。
-1: とても簡単・基礎的
-3: 標準的
-5: とても難しい・発展的
-単語: ${input.word}
-意味: ${input.mean}
-出力は半角数字1文字(1〜5)のみとし、それ以外の文字(説明・記号・改行)は一切含めないでください。`;
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
 
@@ -87,7 +74,7 @@ export async function getDifficultyFromGemini(
         // Gemini 3系はデフォルトで「thinking」が有効(最大8192トークン)なため、
         // thinkingLevelをminimalにしないとmaxOutputTokensが思考に消費され本文が空になる。
         thinkingConfig: { thinkingLevel: 'minimal' },
-        maxOutputTokens: 32,
+        maxOutputTokens,
       },
     }),
   });
@@ -99,7 +86,7 @@ export async function getDifficultyFromGemini(
     if (res.status === 429 && attempt < RETRY_LIMIT) {
       const retryDelayMs = parseRetryDelayMs(errText) ?? 15_000;
       await sleep(retryDelayMs + 500);
-      return getDifficultyFromGemini(input, attempt + 1);
+      return callGeminiText(prompt, maxOutputTokens, attempt + 1);
     }
 
     throw new Error(`Gemini APIエラー(${res.status}): ${errText}`);
@@ -108,6 +95,29 @@ export async function getDifficultyFromGemini(
   const json = await res.json();
   const text: string =
     json?.candidates?.[0]?.content?.parts?.[0]?.text?.toString() ?? '';
+  return text;
+}
+
+export interface DifficultyInput {
+  word: string;
+  mean: string;
+  type: 'english' | 'kobun';
+}
+
+export async function getDifficultyFromGemini(
+  input: DifficultyInput
+): Promise<number> {
+  const kind = input.type === 'english' ? '英単語' : '古文単語';
+  const prompt = `あなたは日本の高校生向け${kind}学習アプリの難易度判定AIです。
+次の${kind}について、日本の高校生が覚える際の難易度を1〜5の整数で判定してください。
+1: とても簡単・基礎的
+3: 標準的
+5: とても難しい・発展的
+単語: ${input.word}
+意味: ${input.mean}
+出力は半角数字1文字(1〜5)のみとし、それ以外の文字(説明・記号・改行)は一切含めないでください。`;
+
+  const text = await callGeminiText(prompt, 32);
   const match = text.match(/[1-5]/);
 
   if (!match) {
@@ -117,4 +127,36 @@ export async function getDifficultyFromGemini(
   }
 
   return parseInt(match[0], 10);
+}
+
+export interface TranslateInput {
+  word: string;
+  type: 'english' | 'kobun';
+}
+
+// 単語(英単語 or 古文単語)を入力すると、意味(mean)を自動生成する翻訳機能。
+export async function getMeaningFromGemini(
+  input: TranslateInput
+): Promise<string> {
+  const prompt =
+    input.type === 'english'
+      ? `あなたは日本の高校生向け英単語学習アプリの翻訳AIです。
+次の英単語の意味を、日本語で簡潔に(単語帳の「意味」欄に入る程度、10〜20文字程度)出力してください。
+複数の意味がある場合は代表的なものを「、」区切りで2〜3個まで挙げてください。
+英単語: ${input.word}
+出力は意味の日本語のみとし、英単語の繰り返しや説明文、記号、引用符、改行は一切含めないでください。`
+      : `あなたは日本の高校生向け古文単語学習アプリの翻訳AIです。
+次の古文単語(古典日本語)の現代語訳を、日本語で簡潔に(単語帳の「意味」欄に入る程度、10〜20文字程度)出力してください。
+複数の意味がある場合は代表的なものを「、」区切りで2〜3個まで挙げてください。
+古文単語: ${input.word}
+出力は現代語訳の日本語のみとし、古文単語の繰り返しや説明文、記号、引用符、改行は一切含めないでください。`;
+
+  const text = await callGeminiText(prompt, 64);
+  const mean = text.trim().replace(/^["「『]|["」』]$/g, '');
+
+  if (!mean) {
+    throw new Error('Geminiの応答から意味を読み取れませんでした');
+  }
+
+  return mean;
 }

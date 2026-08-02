@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getMeaningFromGemini } from '@/lib/gemini';
+import { getTranslationFromGemini } from '@/lib/gemini';
 import { WordSetType } from '@/lib/types';
 
 export async function POST(req: NextRequest) {
@@ -14,8 +14,8 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const mean = await getMeaningFromGemini({ word, type });
-    return NextResponse.json({ mean });
+    const { mean, phonetic } = await getTranslationFromGemini({ word, type });
+    return NextResponse.json({ mean, phonetic });
   } catch (e: any) {
     return NextResponse.json(
       { error: e?.message ?? '翻訳に失敗しました' },

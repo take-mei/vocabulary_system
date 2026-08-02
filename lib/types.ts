@@ -14,6 +14,7 @@ export interface Word {
   word: string;
   mean: string;
   remarks: string | null;
+  phonetic: string | null; // 発音記号(IPA)。英単語のみGeminiが生成。古文単語や未生成はnull
   difficulty: number | null; // 1(易)〜5(難)。Geminiによる判定。未判定はnull
   importance: number; // 1〜5。管理者が設定する重要度。デフォルト3
   created_at: string;

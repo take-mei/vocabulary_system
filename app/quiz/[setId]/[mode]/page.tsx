@@ -16,17 +16,18 @@ import NavHeader from '@/components/NavHeader';
 import FlashCard from '@/components/FlashCard';
 
 const FRONT_IS_WORD: QuizMode[] = ['en_to_jp', 'ko_to_gen'];
-// カードの反転アニメーション時間(CSS globals.cssの.card-flip-innerと合わせる)
-const FLIP_ANIMATION_MS = 500;
 
 // 重要度・難易度・習熟度から出題の重みを計算する。
-// - importance(重要度 1〜5): 高いほど出やすい
+// - importance(重要度 1〜5): 数値が上がるほど「掛け算」で効くようにし、
+//   1→1.0倍 / 2→1.5倍 / 3→2.0倍 / 4→2.5倍 / 5→3.0倍 と、重要度が高い単語ほど
+//   出現頻度が加速度的に増えるようにしている。
 // - difficulty(難易度 1〜5、未判定は3扱い): 高いほど出やすい
 // - proficiencyLevel(習熟度 1〜5、未評価は1=最も苦手扱い): 低いほど出やすい(x2で重視)
 function calcWeight(word: Word, proficiencyLevel: number): number {
   const difficulty = word.difficulty ?? 3;
   const proficiencyFactor = (6 - proficiencyLevel) * 2;
-  const weight = word.importance + difficulty + proficiencyFactor;
+  const importanceMultiplier = 0.5 + word.importance * 0.5; // 1→1.0 ... 5→3.0
+  const weight = (difficulty + proficiencyFactor) * importanceMultiplier;
   return Math.max(weight, 1);
 }
 
@@ -69,7 +70,6 @@ export default function QuizPage() {
   const [loading, setLoading] = useState(true);
   const [pos, setPos] = useState(0);
   const [flipped, setFlipped] = useState(false);
-  const [transitioning, setTransitioning] = useState(false);
   const [results, setResults] = useState<{ correct: number; wrong: number }>({
     correct: 0,
     wrong: 0,
@@ -83,10 +83,12 @@ export default function QuizPage() {
         .select('*')
         .eq('id', setId)
         .single();
+      // アーカイブ済み(チェック済み)の単語は出題対象から除外する
       const { data: wordData } = await supabase
         .from('words')
         .select('*')
-        .eq('set_id', setId);
+        .eq('set_id', setId)
+        .eq('archived', false);
 
       if (setData) setSet(setData as WordSet);
 
@@ -98,10 +100,7 @@ export default function QuizPage() {
         const { data: profData } = await supabase
           .from('word_proficiency')
           .select('*')
-          .in(
-            'word_id',
-            wordList.map((w) => w.id)
-          );
+          .in('word_id', wordList.map((w) => w.id));
         (profData as WordProficiency[] | null)?.forEach((p) => {
           profMap.set(p.word_id, p.level);
         });
@@ -121,14 +120,25 @@ export default function QuizPage() {
   const frontText = current ? (frontIsWord ? current.word : current.mean) : '';
   const backText = current ? (frontIsWord ? current.mean : current.word) : '';
 
+  // 発音記号は英単語(word)側にのみ紐づく
+  const frontPhonetic = current && frontIsWord ? current.phonetic : null;
+  const backPhonetic = current && !frontIsWord ? current.phonetic : null;
+
   const progressPct = useMemo(
     () => (queue.length ? Math.round(((pos + 1) / queue.length) * 100) : 0),
     [pos, queue.length]
   );
 
-// カードの反転アニメーション時間(CSS globals.cssの.card-flip-innerと合わせる)
+  function speakCurrent() {
+    if (!current || !set || typeof window === 'undefined' || !window.speechSynthesis) return;
+    const utterance = new SpeechSynthesisUtterance(current.word);
+    utterance.lang = set.type === 'english' ? 'en-US' : 'ja-JP';
+    window.speechSynthesis.cancel(); // 前の発音が残らないようにする
+    window.speechSynthesis.speak(utterance);
+  }
+
   async function recordAndNext(level: number) {
-    if (!current || transitioning) return;
+    if (!current) return;
     const isCorrect = level >= 4;
     setResults((r) => ({
       correct: r.correct + (isCorrect ? 1 : 0),
@@ -138,13 +148,7 @@ export default function QuizPage() {
     // 学習ログを記録し、単語ごとの現在の習熟度も更新する(失敗しても学習体験は止めない)
     supabase
       .from('study_logs')
-      .insert({
-        word_id: current.id,
-        set_id: setId,
-        mode,
-        is_correct: isCorrect,
-        level,
-      })
+      .insert({ word_id: current.id, set_id: setId, mode, is_correct: isCorrect, level })
       .then(() => {});
 
     supabase
@@ -161,19 +165,12 @@ export default function QuizPage() {
       return next;
     });
 
-    // 先にカードを裏返す(このときはまだ現在の単語のまま)。
-    // 単語の切り替えはアニメーションが完全に終わってから行う。
-    // 同時に切り替えると、裏返っている途中で次の単語の答えが見えてしまうため。
-    setTransitioning(true);
-    setFlipped(false);
-    setTimeout(() => {
-      if (pos + 1 >= queue.length) {
-        setFinished(true);
-      } else {
-        setPos((p) => p + 1);
-      }
-      setTransitioning(false);
-    }, FLIP_ANIMATION_MS);
+    if (pos + 1 >= queue.length) {
+      setFinished(true);
+    } else {
+      setPos((p) => p + 1);
+      setFlipped(false);
+    }
   }
 
   function restart() {
@@ -181,7 +178,6 @@ export default function QuizPage() {
     setQueue(words.length ? buildWeightedQueue(weights, words.length) : []);
     setPos(0);
     setFlipped(false);
-    setTransitioning(false);
     setResults({ correct: 0, wrong: 0 });
     setFinished(false);
   }
@@ -190,10 +186,7 @@ export default function QuizPage() {
     <main>
       <NavHeader />
       <div className="mb-4 flex items-center justify-between">
-        <button
-          onClick={() => router.push('/')}
-          className="text-sm text-gray-500 hover:underline"
-        >
+        <button onClick={() => router.push('/')} className="text-sm text-gray-500 hover:underline">
           ← 単語帳選択に戻る
         </button>
         <span className="rounded-full bg-primary-100 px-3 py-1 text-xs font-semibold text-primary-700">
@@ -207,7 +200,7 @@ export default function QuizPage() {
 
       {!loading && queue.length === 0 && (
         <div className="rounded-xl border border-dashed border-gray-300 bg-white/60 p-6 text-center text-gray-500">
-          この単語帳にはまだ単語が登録されていません。
+          出題できる単語がありません。(単語が未登録、または全てアーカイブ済みです)
         </div>
       )}
 
@@ -223,17 +216,23 @@ export default function QuizPage() {
             {pos + 1} / {queue.length}
           </p>
 
+          {/*
+            key={current.id + pos} を付けてカードごとにDOMを作り直す。
+            これにより「次の単語に進んだ瞬間、裏面(答え)にflipアニメーションが
+            残っていて一瞬見えてしまう」バグを防ぐ(常にflipped=falseの状態から
+            表示が開始される)。
+          */}
           <FlashCard
+            key={`${current.id}-${pos}`}
             word={current}
             frontText={frontText}
             backText={backText}
+            frontPhonetic={frontPhonetic}
+            backPhonetic={backPhonetic}
             remarks={current.remarks}
             flipped={flipped}
-            onFlip={() => {
-              if (!transitioning) setFlipped((f) => !f);
-            }}
-            wordSide={frontIsWord ? 'front' : 'back'}
-            speechLang={set?.type === 'english' ? 'en-US' : 'ja-JP'}
+            onFlip={() => setFlipped((f) => !f)}
+            onSpeak={speakCurrent}
           />
 
           {flipped ? (
@@ -247,11 +246,7 @@ export default function QuizPage() {
                     key={level}
                     onClick={() => recordAndNext(level)}
                     className={`rounded-xl py-3 text-xs font-semibold text-white transition active:scale-95 ${
-                      level <= 2
-                        ? 'bg-red-500'
-                        : level === 3
-                        ? 'bg-amber-500'
-                        : 'bg-green-600'
+                      level <= 2 ? 'bg-red-500' : level === 3 ? 'bg-amber-500' : 'bg-green-600'
                     }`}
                   >
                     <span className="block text-base">{level}</span>
@@ -273,15 +268,10 @@ export default function QuizPage() {
           <h2 className="mb-2 text-xl font-bold">おつかれさまでした！</h2>
           <p className="mb-4 text-gray-500">
             習熟度4以上 {results.correct} / {queue.length}
-            (良好率{' '}
-            {queue.length ? Math.round((results.correct / queue.length) * 100) : 0}
-            %)
+            (良好率 {queue.length ? Math.round((results.correct / queue.length) * 100) : 0}%)
           </p>
           <div className="flex justify-center gap-3">
-            <button
-              onClick={restart}
-              className="rounded-xl bg-primary-600 px-5 py-2 font-semibold text-white"
-            >
+            <button onClick={restart} className="rounded-xl bg-primary-600 px-5 py-2 font-semibold text-white">
               もう一度
             </button>
             <button

@@ -2,35 +2,27 @@
 @tailwind components;
 @tailwind utilities;
 
-html,
-body {
-  min-height: 100%;
-}
+html, body { min-height: 100%; }
 
 body {
   background: linear-gradient(180deg, #f4f7ff 0%, #eef1fb 100%);
   color: #1a1a2e;
 }
 
-.card-flip-container {
-  perspective: 1200px;
-}
+.card-flip-container { perspective: 1200px; }
 
 .card-flip-inner {
   position: relative;
   transform-style: preserve-3d;
-  transition: transform 0.5s cubic-bezier(0.4, 0.2, 0.2, 1);
+  /* 翻訳(裏面)を早めに見せたいという要望に合わせて0.5s→0.25sに短縮 */
+  transition: transform 0.25s cubic-bezier(0.4, 0.2, 0.2, 1);
 }
 
-.card-flip-inner.flipped {
-  transform: rotateY(180deg);
-}
+.card-flip-inner.flipped { transform: rotateY(180deg); }
 
 .card-face {
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
 }
 
-.card-face-back {
-  transform: rotateY(180deg);
-}
+.card-face-back { transform: rotateY(180deg); }

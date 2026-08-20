@@ -14,9 +14,10 @@ export interface Word {
   word: string;
   mean: string;
   remarks: string | null;
-  phonetic: string | null; // 発音記号(IPA)。英単語のみGeminiが生成。古文単語や未生成はnull
   difficulty: number | null; // 1(易)〜5(難)。Geminiによる判定。未判定はnull
   importance: number; // 1〜5。管理者が設定する重要度。デフォルト3
+  phonetic: string | null; // 発音記号(英単語のみ)。未取得はnull
+  archived: boolean; // trueの場合、出題対象から除外される
   created_at: string;
 }
 
@@ -40,11 +41,10 @@ export interface StudyLog {
   set_id: string;
   mode: QuizMode;
   is_correct: boolean;
-  level: number | null; // 1〜5(5段階自己評価)。未評価の古いログはnull
+  level: number | null;
   answered_at: string;
 }
 
-// 単語ごとの現在の習熟度(直近の自己評価)
 export interface WordProficiency {
   word_id: string;
   level: number; // 1〜5

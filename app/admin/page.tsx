@@ -7,6 +7,10 @@ import ImportCsv from '@/components/ImportCsv';
 
 type SortKey = 'created_desc' | 'difficulty_desc' | 'difficulty_asc' | 'importance_desc';
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export default function AdminPage() {
   const [sets, setSets] = useState<WordSet[]>([]);
   const [selectedSetId, setSelectedSetId] = useState<string | null>(null);
@@ -14,6 +18,8 @@ export default function AdminPage() {
   const [loadingSets, setLoadingSets] = useState(true);
   const [loadingWords, setLoadingWords] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>('created_desc');
+  const [showArchived, setShowArchived] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // 新規単語帳フォーム
   const [newSetName, setNewSetName] = useState('');
@@ -32,11 +38,16 @@ export default function AdminPage() {
   const [editMean, setEditMean] = useState('');
   const [editRemarks, setEditRemarks] = useState('');
   const [editImportance, setEditImportance] = useState(3);
+  const [editPhonetic, setEditPhonetic] = useState('');
 
-  // Gemini判定の進行状況
+  // Gemini難易度判定・発音記号取得の進行状況
   const [judgingWordId, setJudgingWordId] = useState<string | null>(null);
+  const [fetchingPhoneticId, setFetchingPhoneticId] = useState<string | null>(null);
   const [bulkJudging, setBulkJudging] = useState(false);
   const [bulkStatus, setBulkStatus] = useState<string | null>(null);
+  const [bulkPhoneticFetching, setBulkPhoneticFetching] = useState(false);
+  const [bulkPhoneticStatus, setBulkPhoneticStatus] = useState<string | null>(null);
+  const [archiving, setArchiving] = useState(false);
 
   const selectedSet = sets.find((s) => s.id === selectedSetId) ?? null;
 
@@ -63,10 +74,16 @@ export default function AdminPage() {
   useEffect(() => {
     if (selectedSetId) loadWords(selectedSetId);
     else setWords([]);
+    setSelectedIds(new Set());
   }, [selectedSetId]);
 
+  const visibleWords = useMemo(
+    () => (showArchived ? words : words.filter((w) => !w.archived)),
+    [words, showArchived]
+  );
+
   const sortedWords = useMemo(() => {
-    const arr = [...words];
+    const arr = [...visibleWords];
     switch (sortKey) {
       case 'difficulty_desc':
         return arr.sort((a, b) => (b.difficulty ?? 0) - (a.difficulty ?? 0));
@@ -80,7 +97,7 @@ export default function AdminPage() {
           (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
         );
     }
-  }, [words, sortKey]);
+  }, [visibleWords, sortKey]);
 
   async function createSet(e: React.FormEvent) {
     e.preventDefault();
@@ -137,6 +154,7 @@ export default function AdminPage() {
     setEditMean(w.mean);
     setEditRemarks(w.remarks ?? '');
     setEditImportance(w.importance ?? 3);
+    setEditPhonetic(w.phonetic ?? '');
   }
 
   async function saveEdit(id: string) {
@@ -148,6 +166,7 @@ export default function AdminPage() {
         mean: editMean.trim(),
         remarks: editRemarks.trim() || null,
         importance: editImportance,
+        phonetic: editPhonetic.trim() || null,
       }),
     });
     if (res.ok && selectedSetId) {
@@ -157,9 +176,40 @@ export default function AdminPage() {
   }
 
   async function deleteWord(id: string) {
-    if (!confirm('この単語を削除しますか？')) return;
+    if (!confirm('この単語を削除しますか？(アーカイブと違い元に戻せません)')) return;
     await fetch(`/api/words/${id}`, { method: 'DELETE' });
     if (selectedSetId) await loadWords(selectedSetId);
+  }
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelectedIds((prev) =>
+      prev.size === sortedWords.length ? new Set() : new Set(sortedWords.map((w) => w.id))
+    );
+  }
+
+  async function archiveSelected(archived: boolean) {
+    if (selectedIds.size === 0 || !selectedSetId) return;
+    setArchiving(true);
+    try {
+      await fetch('/api/words/archive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: Array.from(selectedIds), archived }),
+      });
+      setSelectedIds(new Set());
+      await loadWords(selectedSetId);
+    } finally {
+      setArchiving(false);
+    }
   }
 
   async function judgeDifficulty(wordId: string) {
@@ -181,38 +231,96 @@ export default function AdminPage() {
     }
   }
 
-  async function judgeAllDifficulty() {
-    if (!selectedSetId) return;
-    if (
-      !confirm(
-        `「${selectedSet?.name}」の全単語(${words.length}件)をGeminiで難易度判定します。単語数が多いと時間がかかります。続行しますか？`
-      )
-    )
-      return;
-    setBulkJudging(true);
-    setBulkStatus('判定中...');
+  async function fetchPhonetic(wordId: string) {
+    setFetchingPhoneticId(wordId);
     try {
-      const res = await fetch('/api/difficulty', {
+      const res = await fetch('/api/phonetic', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ set_id: selectedSetId }),
+        body: JSON.stringify({ word_id: wordId }),
       });
       const json = await res.json();
       if (!res.ok) {
-        setBulkStatus(`エラー: ${json.error ?? '判定に失敗しました'}`);
-      } else {
-        const errSuffix =
-          json.failed > 0 && json.firstError ? ` / 原因: ${json.firstError}` : '';
-        setBulkStatus(
-          `${json.updated}件判定完了(失敗${json.failed}件 / 全${json.total}件)${errSuffix}`
-        );
+        alert(`発音記号の取得に失敗しました: ${json.error ?? '不明なエラー'}`);
+      } else if (selectedSetId) {
         await loadWords(selectedSetId);
       }
-    } catch {
-      setBulkStatus('通信エラーが発生しました');
     } finally {
-      setBulkJudging(false);
+      setFetchingPhoneticId(null);
     }
+  }
+
+  // Gemini難易度判定を単語ごとに1件ずつ呼び出す(サーバー側で一括ループするとVercelの
+  // タイムアウトで数百件のうち数件しか処理できず止まってしまうため、
+  // クライアント側で1件ずつ呼び出して進捗を表示しながら処理する)
+  async function judgeAllDifficulty() {
+    if (!selectedSetId) return;
+    const target = words.filter((w) => w.difficulty === null && !w.archived);
+    if (target.length === 0) {
+      setBulkStatus('未判定の単語はありません');
+      return;
+    }
+    if (
+      !confirm(
+        `未判定の単語${target.length}件をGeminiで判定します。件数が多いと数分かかることがあります。続行しますか？`
+      )
+    )
+      return;
+
+    setBulkJudging(true);
+    let done = 0;
+    let failed = 0;
+    for (const w of target) {
+      try {
+        const res = await fetch('/api/difficulty', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ word_id: w.id }),
+        });
+        if (res.ok) done += 1;
+        else failed += 1;
+      } catch {
+        failed += 1;
+      }
+      setBulkStatus(`判定中... ${done + failed} / ${target.length}件(失敗${failed}件)`);
+      await sleep(150); // APIのレート制限に配慮して少し間隔を空ける
+    }
+    setBulkStatus(`完了: 成功${done}件 / 失敗${failed}件 / 全${target.length}件`);
+    setBulkJudging(false);
+    await loadWords(selectedSetId);
+  }
+
+  // 発音記号の一括取得も同じ理由でクライアント側から1件ずつ呼び出す(英単語のみ)
+  async function fetchAllPhonetic() {
+    if (!selectedSetId || selectedSet?.type !== 'english') return;
+    const target = words.filter((w) => !w.phonetic && !w.archived);
+    if (target.length === 0) {
+      setBulkPhoneticStatus('未取得の単語はありません');
+      return;
+    }
+    if (!confirm(`未取得の単語${target.length}件の発音記号を取得します。続行しますか？`)) return;
+
+    setBulkPhoneticFetching(true);
+    let done = 0;
+    let failed = 0;
+    for (const w of target) {
+      try {
+        const res = await fetch('/api/phonetic', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ word_id: w.id }),
+        });
+        if (res.ok) done += 1;
+        else failed += 1;
+      } catch {
+        failed += 1;
+      }
+      setBulkPhoneticStatus(`取得中... ${done + failed} / ${target.length}件(失敗${failed}件)`);
+      await sleep(150);
+    }
+    setBulkPhoneticStatus(`完了: 成功${done}件 / 失敗${failed}件 / 全${target.length}件`);
+    setBulkPhoneticFetching(false);
+    await loadWords(selectedSetId);
   }
 
   return (
@@ -282,25 +390,16 @@ export default function AdminPage() {
         <section className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="font-bold">「{selectedSet.name}」の単語管理</h2>
-            <button
-              onClick={() => deleteSet(selectedSet.id)}
-              className="text-xs text-red-500 hover:underline"
-            >
+            <button onClick={() => deleteSet(selectedSet.id)} className="text-xs text-red-500 hover:underline">
               単語帳を削除
             </button>
           </div>
 
           <div className="mb-4">
-            <ImportCsv
-              setId={selectedSet.id}
-              onImported={() => loadWords(selectedSet.id)}
-            />
+            <ImportCsv setId={selectedSet.id} onImported={() => loadWords(selectedSet.id)} />
           </div>
 
-          <form
-            onSubmit={createWord}
-            className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-5"
-          >
+          <form onSubmit={createWord} className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-5">
             <input
               value={newWord}
               onChange={(e) => setNewWord(e.target.value)}
@@ -331,16 +430,14 @@ export default function AdminPage() {
                 </option>
               ))}
             </select>
-            <button
-              type="submit"
-              className="rounded-lg bg-primary-600 py-2 text-sm font-semibold text-white"
-            >
+            <button type="submit" className="rounded-lg bg-primary-600 py-2 text-sm font-semibold text-white">
               単語を追加
             </button>
           </form>
 
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-sm">
+          {/* 一括操作バー */}
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b pb-3">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
               <span className="text-gray-500">並び替え:</span>
               <select
                 value={sortKey}
@@ -352,17 +449,66 @@ export default function AdminPage() {
                 <option value="difficulty_asc">難易度が低い順</option>
                 <option value="importance_desc">重要度が高い順</option>
               </select>
+              <label className="ml-2 flex items-center gap-1 text-xs text-gray-500">
+                <input
+                  type="checkbox"
+                  checked={showArchived}
+                  onChange={(e) => setShowArchived(e.target.checked)}
+                />
+                アーカイブ済みも表示
+              </label>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {bulkStatus && <span className="text-xs text-gray-500">{bulkStatus}</span>}
               <button
                 onClick={judgeAllDifficulty}
                 disabled={bulkJudging || words.length === 0}
                 className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
               >
-                {bulkJudging ? '判定中...' : 'Geminiで全単語を難易度判定'}
+                {bulkJudging ? '判定中...' : 'Geminiで難易度を一括判定'}
               </button>
+              {selectedSet.type === 'english' && (
+                <>
+                  {bulkPhoneticStatus && (
+                    <span className="text-xs text-gray-500">{bulkPhoneticStatus}</span>
+                  )}
+                  <button
+                    onClick={fetchAllPhonetic}
+                    disabled={bulkPhoneticFetching || words.length === 0}
+                    className="rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                  >
+                    {bulkPhoneticFetching ? '取得中...' : '発音記号を一括取得'}
+                  </button>
+                </>
+              )}
             </div>
+          </div>
+
+          {/* 選択中の操作 */}
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
+            <label className="flex items-center gap-1">
+              <input
+                type="checkbox"
+                checked={sortedWords.length > 0 && selectedIds.size === sortedWords.length}
+                onChange={toggleSelectAll}
+              />
+              全て選択
+            </label>
+            <span className="text-gray-400">選択中: {selectedIds.size}件</span>
+            <button
+              onClick={() => archiveSelected(true)}
+              disabled={selectedIds.size === 0 || archiving}
+              className="rounded-lg bg-gray-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+            >
+              選択した単語をアーカイブ
+            </button>
+            <button
+              onClick={() => archiveSelected(false)}
+              disabled={selectedIds.size === 0 || archiving}
+              className="rounded-lg bg-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 disabled:opacity-50"
+            >
+              選択した単語を復元
+            </button>
           </div>
 
           {loadingWords && <p className="text-sm text-gray-400">読み込み中...</p>}
@@ -371,17 +517,26 @@ export default function AdminPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-gray-500">
+                  <th className="py-2 pr-2">✓</th>
                   <th className="py-2 pr-2">単語</th>
                   <th className="py-2 pr-2">意味</th>
                   <th className="py-2 pr-2">備考</th>
                   <th className="py-2 pr-2">重要度</th>
                   <th className="py-2 pr-2">難易度</th>
+                  {selectedSet.type === 'english' && <th className="py-2 pr-2">発音記号</th>}
                   <th className="py-2 pr-2 text-right">操作</th>
                 </tr>
               </thead>
               <tbody>
                 {sortedWords.map((w) => (
-                  <tr key={w.id} className="border-b last:border-0">
+                  <tr key={w.id} className={`border-b last:border-0 ${w.archived ? 'opacity-50' : ''}`}>
+                    <td className="py-2 pr-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(w.id)}
+                        onChange={() => toggleSelect(w.id)}
+                      />
+                    </td>
                     {editingWordId === w.id ? (
                       <>
                         <td className="py-2 pr-2">
@@ -418,27 +573,36 @@ export default function AdminPage() {
                             ))}
                           </select>
                         </td>
-                        <td className="py-2 pr-2 text-gray-400">
-                          {w.difficulty ?? '未判定'}
-                        </td>
+                        <td className="py-2 pr-2 text-gray-400">{w.difficulty ?? '未判定'}</td>
+                        {selectedSet.type === 'english' && (
+                          <td className="py-2 pr-2">
+                            <input
+                              value={editPhonetic}
+                              onChange={(e) => setEditPhonetic(e.target.value)}
+                              placeholder="例: /əˈbaʊt/"
+                              className="w-24 rounded border border-gray-300 px-2 py-1"
+                            />
+                          </td>
+                        )}
                         <td className="py-2 pr-2 text-right">
-                          <button
-                            onClick={() => saveEdit(w.id)}
-                            className="mr-2 text-primary-600 hover:underline"
-                          >
+                          <button onClick={() => saveEdit(w.id)} className="mr-2 text-primary-600 hover:underline">
                             保存
                           </button>
-                          <button
-                            onClick={() => setEditingWordId(null)}
-                            className="text-gray-400 hover:underline"
-                          >
+                          <button onClick={() => setEditingWordId(null)} className="text-gray-400 hover:underline">
                             取消
                           </button>
                         </td>
                       </>
                     ) : (
                       <>
-                        <td className="py-2 pr-2 font-medium">{w.word}</td>
+                        <td className="py-2 pr-2 font-medium">
+                          {w.word}
+                          {w.archived && (
+                            <span className="ml-1 rounded-full bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-500">
+                              アーカイブ済
+                            </span>
+                          )}
+                        </td>
                         <td className="py-2 pr-2">{w.mean}</td>
                         <td className="py-2 pr-2 text-gray-500">{w.remarks}</td>
                         <td className="py-2 pr-2">
@@ -461,17 +625,26 @@ export default function AdminPage() {
                             </button>
                           )}
                         </td>
+                        {selectedSet.type === 'english' && (
+                          <td className="py-2 pr-2">
+                            {w.phonetic ? (
+                              <span className="text-xs text-gray-600">[{w.phonetic}]</span>
+                            ) : (
+                              <button
+                                onClick={() => fetchPhonetic(w.id)}
+                                disabled={fetchingPhoneticId === w.id}
+                                className="text-xs text-sky-600 hover:underline disabled:opacity-50"
+                              >
+                                {fetchingPhoneticId === w.id ? '取得中...' : '辞書で取得'}
+                              </button>
+                            )}
+                          </td>
+                        )}
                         <td className="py-2 pr-2 text-right">
-                          <button
-                            onClick={() => startEdit(w)}
-                            className="mr-2 text-primary-600 hover:underline"
-                          >
+                          <button onClick={() => startEdit(w)} className="mr-2 text-primary-600 hover:underline">
                             編集
                           </button>
-                          <button
-                            onClick={() => deleteWord(w.id)}
-                            className="text-red-500 hover:underline"
-                          >
+                          <button onClick={() => deleteWord(w.id)} className="text-red-500 hover:underline">
                             削除
                           </button>
                         </td>
@@ -481,9 +654,9 @@ export default function AdminPage() {
                 ))}
               </tbody>
             </table>
-            {!loadingWords && words.length === 0 && (
+            {!loadingWords && sortedWords.length === 0 && (
               <p className="py-4 text-center text-gray-400">
-                まだ単語が登録されていません。
+                {showArchived ? '単語が登録されていません。' : '表示できる単語がありません(全てアーカイブ済みの可能性があります)。'}
               </p>
             )}
           </div>

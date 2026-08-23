@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { WordSet, MODES_BY_TYPE, MODE_LABELS } from '@/lib/types';
 import NavHeader from '@/components/NavHeader';
+import TranslateBox from '@/components/TranslateBox';
 
 export default function HomePage() {
   const router = useRouter();
@@ -28,6 +29,9 @@ export default function HomePage() {
   return (
     <main>
       <NavHeader />
+
+      <TranslateBox />
+
       <h1 className="mb-1 text-xl font-bold">単語帳を選ぶ</h1>
       <p className="mb-5 text-sm text-gray-500">
         単語帳をタップして、出題モードを選んでください。

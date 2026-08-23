@@ -1,102 +1,7 @@
 // Gemini APIを使って単語の難易度(1〜5)を判定するヘルパー。
 // このファイルはサーバー側(APIルート)からのみ呼び出すこと。GEMINI_API_KEYを外部に渡さない。
 
-// 注: gemini-2.0-flash は廃止(シャットダウン済み)、gemini-2.5-flash も新規ユーザー向け提供終了のため
-// 現行の安定版 gemini-3.6-flash をデフォルトに変更。GEMINI_MODEL 環境変数で上書き可能。
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
-
-// 無料枠は「1分あたりのリクエスト数」に上限がある(モデルによって異なる。既定は5件/分)。
-// GEMINI_RPM 環境変数で上書き可能(有料プランなど上限が高い場合はここを増やす)。
-const RPM_LIMIT = Number(process.env.GEMINI_RPM) || 5;
-const RETRY_LIMIT = 5;
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// 直近60秒間に送ったリクエストのタイムスタンプ。件数に応じて必要な分だけ自動で待つ
-// (少ない件数なら待たない/多い件数ならレート上限に合わせて自動的に間隔を空ける)。
-const requestTimestamps: number[] = [];
-
-async function waitForRateLimitSlot(): Promise<void> {
-  const now = Date.now();
-  while (requestTimestamps.length && now - requestTimestamps[0] >= 60_000) {
-    requestTimestamps.shift();
-  }
-  if (requestTimestamps.length >= RPM_LIMIT) {
-    const waitMs = 60_000 - (now - requestTimestamps[0]) + 250; // 余裕を持たせる
-    await sleep(Math.max(waitMs, 0));
-    return waitForRateLimitSlot();
-  }
-  requestTimestamps.push(Date.now());
-}
-
-// 実際に枠を消費せず「今リクエストしたら何ms待つ必要があるか」だけを確認する。
-// バッチ処理側が「残り時間内に収まらないから今回はここで打ち切る」と判断するために使う。
-export function peekRateLimitWaitMs(): number {
-  const now = Date.now();
-  const active = requestTimestamps.filter((t) => now - t < 60_000);
-  if (active.length < RPM_LIMIT) return 0;
-  return Math.max(60_000 - (now - active[0]) + 250, 0);
-}
-
-// Geminiの429レスポンスに含まれる "Please retry in 18.08s" / retryDelay: "18s" を読み取る
-function parseRetryDelayMs(errText: string): number | null {
-  const retryDelayMatch = errText.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/);
-  if (retryDelayMatch) return Math.ceil(parseFloat(retryDelayMatch[1]) * 1000);
-  const retryInMatch = errText.match(/retry in (\d+(?:\.\d+)?)s/);
-  if (retryInMatch) return Math.ceil(parseFloat(retryInMatch[1]) * 1000);
-  return null;
-}
-
-// Gemini APIへの共通呼び出し処理(レート制限待ち・429自動リトライ込み)。
-// prompt(指示文)とmaxOutputTokensだけ渡せば、応答テキストを返す。
-async function callGeminiText(
-  prompt: string,
-  maxOutputTokens: number,
-  attempt = 0
-): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('環境変数 GEMINI_API_KEY が設定されていません');
-  }
-
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
-
-  await waitForRateLimitSlot();
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        // Gemini 3系はデフォルトで「thinking」が有効(最大8192トークン)なため、
-        // thinkingLevelをminimalにしないとmaxOutputTokensが思考に消費され本文が空になる。
-        thinkingConfig: { thinkingLevel: 'minimal' },
-        maxOutputTokens,
-      },
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-
-    // 429(レート制限)はAPIが教えてくれる待ち時間分だけ待って自動リトライする
-    if (res.status === 429 && attempt < RETRY_LIMIT) {
-      const retryDelayMs = parseRetryDelayMs(errText) ?? 15_000;
-      await sleep(retryDelayMs + 500);
-      return callGeminiText(prompt, maxOutputTokens, attempt + 1);
-    }
-
-    throw new Error(`Gemini APIエラー(${res.status}): ${errText}`);
-  }
-
-  const json = await res.json();
-  const text: string =
-    json?.candidates?.[0]?.content?.parts?.[0]?.text?.toString() ?? '';
-  return text;
-}
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 
 export interface DifficultyInput {
   word: string;
@@ -104,9 +9,12 @@ export interface DifficultyInput {
   type: 'english' | 'kobun';
 }
 
-export async function getDifficultyFromGemini(
-  input: DifficultyInput
-): Promise<number> {
+export async function getDifficultyFromGemini(input: DifficultyInput): Promise<number> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('環境変数 GEMINI_API_KEY が設定されていません');
+  }
+
   const kind = input.type === 'english' ? '英単語' : '古文単語';
   const prompt = `あなたは日本の高校生向け${kind}学習アプリの難易度判定AIです。
 次の${kind}について、日本の高校生が覚える際の難易度を1〜5の整数で判定してください。
@@ -117,62 +25,128 @@ export async function getDifficultyFromGemini(
 意味: ${input.mean}
 出力は半角数字1文字(1〜5)のみとし、それ以外の文字(説明・記号・改行)は一切含めないでください。`;
 
-  const text = await callGeminiText(prompt, 32);
-  const match = text.match(/[1-5]/);
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
 
-  if (!match) {
-    throw new Error(
-      `Geminiの応答から難易度(1〜5)を読み取れませんでした: "${text}"`
-    );
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0, maxOutputTokens: 8 },
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`Gemini APIエラー(${res.status}): ${errText}`);
   }
 
+  const json = await res.json();
+  const text: string = json?.candidates?.[0]?.content?.parts?.[0]?.text?.toString() ?? '';
+  const match = text.match(/[1-5]/);
+  if (!match) {
+    throw new Error(`Geminiの応答から難易度(1〜5)を読み取れませんでした: "${text}"`);
+  }
   return parseInt(match[0], 10);
 }
 
-export interface TranslateInput {
+// --- 長文読解問題の生成 ---
+
+export interface PassageWord {
   word: string;
-  type: 'english' | 'kobun';
-}
-
-export interface TranslateResult {
   mean: string;
-  phonetic: string | null; // 発音記号(IPA)。英単語のみ生成。古文単語は常にnull
 }
 
-// 単語(英単語 or 古文単語)を入力すると、意味(mean)と(英単語なら)発音記号を自動生成する翻訳機能。
-export async function getTranslationFromGemini(
-  input: TranslateInput
-): Promise<TranslateResult> {
-  const prompt =
-    input.type === 'english'
-      ? `あなたは日本の高校生向け英単語学習アプリの翻訳AIです。
-次の英単語について、JSON形式で出力してください。
-{"mean": "日本語の意味(単語帳の「意味」欄に入る程度、10〜20文字程度。複数ある場合は代表的なものを「、」区切りで2〜3個)", "phonetic": "国際音声記号(IPA)による発音記号。スラッシュ(/.../)で囲む"}
-英単語: ${input.word}
-出力は上記のJSONオブジェクトのみとし、コードブロック記号(\`\`\`)や説明文、前後の余計な文字は一切含めないでください。`
-      : `あなたは日本の高校生向け古文単語学習アプリの翻訳AIです。
-次の古文単語(古典日本語)について、JSON形式で出力してください。
-{"mean": "現代語訳(単語帳の「意味」欄に入る程度、10〜20文字程度。複数ある場合は代表的なものを「、」区切りで2〜3個)"}
-古文単語: ${input.word}
-出力は上記のJSONオブジェクトのみとし、コードブロック記号(\`\`\`)や説明文、前後の余計な文字は一切含めないでください。`;
+export interface PassageQuestion {
+  question: string;
+  choices: string[];
+  answer_index: number; // choicesの正解インデックス(0始まり)
+  explanation: string;
+}
 
-  const text = await callGeminiText(prompt, 128);
-  const cleaned = text.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+export interface GeneratedPassage {
+  title: string;
+  passage: string;
+  used_words: string[];
+  questions: PassageQuestion[];
+}
 
-  let parsed: { mean?: string; phonetic?: string };
+function extractJson(text: string): string {
+  // ```json ... ``` のようなコードフェンスを取り除く
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  return (fenced ? fenced[1] : text).trim();
+}
+
+export async function generateEnglishPassage(
+  words: PassageWord[]
+): Promise<GeneratedPassage> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('環境変数 GEMINI_API_KEY が設定されていません');
+  }
+  if (words.length === 0) {
+    throw new Error('単語が指定されていません');
+  }
+
+  const wordList = words.map((w) => `- ${w.word}(${w.mean})`).join('\n');
+
+  const prompt = `あなたは日本の高校生向け英語教材の作成AIです。
+次の単語リストのうち、できるだけ多くの単語を自然な形で使った、日本の高校生が読む長文読解問題を作成してください。
+
+単語リスト:
+${wordList}
+
+要件:
+- 英文(passage)は150〜250語程度で、高校生が読める難易度にすること
+- 単語リストの単語は文中でそのまま(必要なら活用変化させて)使用すること
+- 内容理解を問う4〜5問の選択式問題(questions)を作ること。各問題は4択とし、正解は1つ
+- 問題文(question)と選択肢(choices)、解説(explanation)は全て日本語で書くこと
+- 出力は次のJSON形式のみとし、それ以外の文字列(説明文やコードフェンス)は一切含めないこと
+
+出力形式(JSON):
+{
+  "title": "長文のタイトル(日本語)",
+  "passage": "英語の長文本文",
+  "used_words": ["実際に使用した単語1", "単語2", ...],
+  "questions": [
+    {
+      "question": "設問文(日本語)",
+      "choices": ["選択肢1", "選択肢2", "選択肢3", "選択肢4"],
+      "answer_index": 0,
+      "explanation": "解説(日本語)"
+    }
+  ]
+}`;
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.7, maxOutputTokens: 4096 },
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`Gemini APIエラー(${res.status}): ${errText}`);
+  }
+
+  const json = await res.json();
+  const text: string = json?.candidates?.[0]?.content?.parts?.[0]?.text?.toString() ?? '';
+
+  let parsed: GeneratedPassage;
   try {
-    parsed = JSON.parse(cleaned);
+    parsed = JSON.parse(extractJson(text));
   } catch {
-    throw new Error(`Geminiの応答をJSONとして読み取れませんでした: "${text}"`);
+    throw new Error(`Geminiの応答をJSONとして解析できませんでした: "${text.slice(0, 200)}..."`);
   }
 
-  const mean = (parsed.mean ?? '').trim().replace(/^["「『]|["」』]$/g, '');
-  if (!mean) {
-    throw new Error('Geminiの応答から意味を読み取れませんでした');
+  if (!parsed.passage || !Array.isArray(parsed.questions)) {
+    throw new Error('Geminiの応答に必要な項目(passage, questions)が含まれていません');
   }
 
-  const phonetic =
-    input.type === 'english' && parsed.phonetic ? parsed.phonetic.trim() : null;
-
-  return { mean, phonetic };
+  return parsed;
 }

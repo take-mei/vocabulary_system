@@ -18,8 +18,8 @@ export async function getDifficultyFromGemini(input: DifficultyInput): Promise<n
   }
 
   const kind = input.type === 'english' ? '英単語' : '古文単語';
-  const prompt = `あなたは日本の大学受験生（高校生）向け${kind}学習アプリの難易度判定AIです。
-次の${kind}について、大学受験生（偏差値50~60）が覚える際の難易度を1〜5の整数で判定してください。
+  const prompt = `あなたは日本の高校生向け${kind}学習アプリの難易度判定AIです。
+次の${kind}について、日本の高校生が覚える際の難易度を1〜5の整数で判定してください。
 1: とても簡単・基礎的
 3: 標準的
 5: とても難しい・発展的
@@ -92,14 +92,14 @@ export async function generateEnglishPassage(
 
   const wordList = words.map((w) => `- ${w.word}(${w.mean})`).join('\n');
 
-  const prompt = `あなたは日本の大学の受験生向け英語教材の作成AIです。
-次の単語リストのうち、できるだけ多くの単語を自然な形で使った、日本の大学受験生が読む長文読解問題を作成してください。
+  const prompt = `あなたは日本の高校生向け英語教材の作成AIです。
+次の単語リストのうち、できるだけ多くの単語を自然な形で使った、日本の高校生が読む長文読解問題を作成してください。
 
 単語リスト:
 ${wordList}
 
 要件:
-- 英文(passage)は500〜800語程度で、大学受験生（偏差値55~60）が取り組むべき難易度にすること
+- 英文(passage)は150〜250語程度で、高校生が読める難易度にすること
 - 単語リストの単語は文中でそのまま(必要なら活用変化させて)使用すること
 - 内容理解を問う4〜5問の選択式問題(questions)を作ること。各問題は4択とし、正解は1つ
 - 問題文(question)と選択肢(choices)、解説(explanation)は全て日本語で書くこと
@@ -127,7 +127,35 @@ ${wordList}
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.7, maxOutputTokens: 4096 },
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 8192,
+        // Geminiにネイティブでこの形のJSONだけを返させる(コードフェンスや前置き文が混ざらず、
+        // 途中で応答が切れて壊れたJSONになる問題も軽減できる)
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            passage: { type: 'string' },
+            used_words: { type: 'array', items: { type: 'string' } },
+            questions: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  question: { type: 'string' },
+                  choices: { type: 'array', items: { type: 'string' } },
+                  answer_index: { type: 'integer' },
+                  explanation: { type: 'string' },
+                },
+                required: ['question', 'choices', 'answer_index', 'explanation'],
+              },
+            },
+          },
+          required: ['title', 'passage', 'used_words', 'questions'],
+        },
+      },
     }),
   });
 
@@ -137,13 +165,28 @@ ${wordList}
   }
 
   const json = await res.json();
-  const text: string = json?.candidates?.[0]?.content?.parts?.[0]?.text?.toString() ?? '';
+  const candidate = json?.candidates?.[0];
+  const text: string = candidate?.content?.parts?.[0]?.text?.toString() ?? '';
+  const finishReason: string | undefined = candidate?.finishReason;
+
+  if (!text) {
+    throw new Error(
+      `Geminiから本文が返されませんでした(finishReason: ${finishReason ?? '不明'})。単語数を減らして再試行してください。`
+    );
+  }
 
   let parsed: GeneratedPassage;
   try {
     parsed = JSON.parse(extractJson(text));
   } catch {
-    throw new Error(`Geminiの応答をJSONとして解析できませんでした: "${text.slice(0, 200)}..."`);
+    // 応答が長すぎて途中で切れた場合、finishReasonが'MAX_TOKENS'になる
+    const reasonHint =
+      finishReason === 'MAX_TOKENS'
+        ? '(応答が長すぎて途中で切れた可能性があります。選択する単語数を減らして再試行してください)'
+        : '';
+    throw new Error(
+      `Geminiの応答をJSONとして解析できませんでした${reasonHint}: "${text.slice(0, 300)}..."`
+    );
   }
 
   if (!parsed.passage || !Array.isArray(parsed.questions)) {

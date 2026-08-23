@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { Word, WordSet, WordSetType } from '@/lib/types';
 import NavHeader from '@/components/NavHeader';
@@ -390,9 +391,14 @@ export default function AdminPage() {
         <section className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="font-bold">「{selectedSet.name}」の単語管理</h2>
-            <button onClick={() => deleteSet(selectedSet.id)} className="text-xs text-red-500 hover:underline">
-              単語帳を削除
-            </button>
+            <div className="flex items-center gap-3">
+              <Link href={`/test/${selectedSet.id}`} className="text-xs text-primary-600 hover:underline">
+                📝 アーカイブからテスト作成
+              </Link>
+              <button onClick={() => deleteSet(selectedSet.id)} className="text-xs text-red-500 hover:underline">
+                単語帳を削除
+              </button>
+            </div>
           </div>
 
           <div className="mb-4">

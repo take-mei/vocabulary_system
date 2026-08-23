@@ -18,8 +18,8 @@ export async function getDifficultyFromGemini(input: DifficultyInput): Promise<n
   }
 
   const kind = input.type === 'english' ? '英単語' : '古文単語';
-  const prompt = `あなたは日本の高校生向け${kind}学習アプリの難易度判定AIです。
-次の${kind}について、日本の高校生が覚える際の難易度を1〜5の整数で判定してください。
+  const prompt = `あなたは日本の大学受験生（高校生）向け${kind}学習アプリの難易度判定AIです。
+次の${kind}について、大学受験生（偏差値50~60）が覚える際の難易度を1〜5の整数で判定してください。
 1: とても簡単・基礎的
 3: 標準的
 5: とても難しい・発展的
@@ -92,14 +92,14 @@ export async function generateEnglishPassage(
 
   const wordList = words.map((w) => `- ${w.word}(${w.mean})`).join('\n');
 
-  const prompt = `あなたは日本の高校生向け英語教材の作成AIです。
-次の単語リストのうち、できるだけ多くの単語を自然な形で使った、日本の高校生が読む長文読解問題を作成してください。
+  const prompt = `あなたは日本の大学の受験生向け英語教材の作成AIです。
+次の単語リストのうち、できるだけ多くの単語を自然な形で使った、日本の大学受験生が読む長文読解問題を作成してください。
 
 単語リスト:
 ${wordList}
 
 要件:
-- 英文(passage)は150〜250語程度で、高校生が読める難易度にすること
+- 英文(passage)は500〜800語程度で、大学受験生（偏差値55~60）が取り組むべき難易度にすること
 - 単語リストの単語は文中でそのまま(必要なら活用変化させて)使用すること
 - 内容理解を問う4〜5問の選択式問題(questions)を作ること。各問題は4択とし、正解は1つ
 - 問題文(question)と選択肢(choices)、解説(explanation)は全て日本語で書くこと

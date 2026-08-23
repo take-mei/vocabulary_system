@@ -1,6 +1,8 @@
 // Gemini APIを使って単語の難易度(1〜5)を判定するヘルパー。
 // このファイルはサーバー側(APIルート)からのみ呼び出すこと。GEMINI_API_KEYを外部に渡さない。
 
+import { WordSetType } from '@/lib/types';
+
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 
 export interface DifficultyInput {
@@ -149,4 +151,92 @@ ${wordList}
   }
 
   return parsed;
+}
+
+// --- 単語登録時の自動翻訳 ---
+// 管理画面で単語(word)だけを入力したとき、意味(mean)・発音記号(phonetic)を
+// Geminiに自動生成させるための関数。
+// - english: word=英単語 → mean=日本語訳、phonetic=発音記号(IPA)
+// - kobun:   word=古語   → mean=現代語訳、phonetic=null(古語には発音記号がないため)
+
+export interface TranslationInput {
+  word: string;
+  type: WordSetType;
+}
+
+export interface TranslationResult {
+  mean: string;
+  phonetic: string | null;
+}
+
+export async function getTranslationFromGemini(
+  input: TranslationInput
+): Promise<TranslationResult> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('環境変数 GEMINI_API_KEY が設定されていません');
+  }
+
+  const prompt =
+    input.type === 'english'
+      ? `あなたは日本の高校生向け英単語学習アプリの翻訳AIです。
+次の英単語について、日本の高校生向けの日本語訳(意味)と発音記号(IPA)を答えてください。
+
+英単語: ${input.word}
+
+出力は次のJSON形式のみとし、それ以外の文字列(説明文やコードフェンス)は一切含めないでください。
+意味は日本語で、最も一般的なものを1つ、簡潔に(名詞なら名詞、動詞なら動詞の訳のみなど)書いてください。
+発音記号が分からない場合は phonetic を null にしてください。
+
+{
+  "mean": "日本語の意味",
+  "phonetic": "発音記号(スラッシュなし。例: əˈbaʊt)"
+}`
+      : `あなたは日本の高校生向け古文単語学習アプリの翻訳AIです。
+次の古語(古文単語)について、日本の高校生向けの現代語訳を答えてください。
+
+古語: ${input.word}
+
+出力は次のJSON形式のみとし、それ以外の文字列(説明文やコードフェンス)は一切含めないでください。
+現代語訳は最も一般的なものを1つ、簡潔に書いてください。phoneticは常にnullにしてください。
+
+{
+  "mean": "現代語訳",
+  "phonetic": null
+}`;
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.2, maxOutputTokens: 256 },
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`Gemini APIエラー(${res.status}): ${errText}`);
+  }
+
+  const json = await res.json();
+  const text: string = json?.candidates?.[0]?.content?.parts?.[0]?.text?.toString() ?? '';
+
+  let parsed: { mean?: string; phonetic?: string | null };
+  try {
+    parsed = JSON.parse(extractJson(text));
+  } catch {
+    throw new Error(`Geminiの応答をJSONとして解析できませんでした: "${text.slice(0, 200)}..."`);
+  }
+
+  if (!parsed.mean) {
+    throw new Error('Geminiの応答に意味(mean)が含まれていません');
+  }
+
+  return {
+    mean: parsed.mean,
+    phonetic: parsed.phonetic ?? null,
+  };
 }

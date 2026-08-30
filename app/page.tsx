@@ -8,12 +8,24 @@ import { supabase } from '@/lib/supabaseClient';
 import { WordSet, MODES_BY_TYPE, MODE_LABELS } from '@/lib/types';
 import NavHeader from '@/components/NavHeader';
 import TranslateBox from '@/components/TranslateBox';
+import { downloadSetForOffline, getOfflineSet } from '@/lib/offlineStore';
 
 export default function HomePage() {
   const router = useRouter();
   const [sets, setSets] = useState<WordSet[]>([]);
   const [loading, setLoading] = useState(true);
   const [openSetId, setOpenSetId] = useState<string | null>(null);
+  const [downloadedAt, setDownloadedAt] = useState<Record<string, string>>({});
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+
+  function refreshDownloadStatus(list: WordSet[]) {
+    const map: Record<string, string> = {};
+    list.forEach((s) => {
+      const offline = getOfflineSet(s.id);
+      if (offline) map[s.id] = offline.downloadedAt;
+    });
+    setDownloadedAt(map);
+  }
 
   useEffect(() => {
     (async () => {
@@ -21,10 +33,24 @@ export default function HomePage() {
         .from('word_sets')
         .select('*')
         .order('created_at', { ascending: false });
-      if (!error && data) setSets(data as WordSet[]);
+      if (!error && data) {
+        setSets(data as WordSet[]);
+        refreshDownloadStatus(data as WordSet[]);
+      }
       setLoading(false);
     })();
   }, []);
+
+  async function handleDownload(setId: string) {
+    setDownloadingId(setId);
+    const result = await downloadSetForOffline(setId);
+    if (!result.ok) {
+      alert(`ダウンロードに失敗しました: ${result.error}`);
+    } else {
+      refreshDownloadStatus(sets);
+    }
+    setDownloadingId(null);
+  }
 
   return (
     <main>
@@ -34,7 +60,7 @@ export default function HomePage() {
 
       <h1 className="mb-1 text-xl font-bold">単語帳を選ぶ</h1>
       <p className="mb-5 text-sm text-gray-500">
-        単語帳をタップして、出題モードを選んでください。
+        単語帳をタップして、出題モードを選んでください。Wi-Fiがある時に「オフライン用にダウンロード」しておくと、電波が悪い場所でも学習できます。
       </p>
 
       {loading && <p className="text-gray-400">読み込み中...</p>}
@@ -52,6 +78,7 @@ export default function HomePage() {
         {sets.map((set) => {
           const isOpen = openSetId === set.id;
           const modes = MODES_BY_TYPE[set.type];
+          const downloaded = downloadedAt[set.id];
           return (
             <div
               key={set.id}
@@ -81,12 +108,25 @@ export default function HomePage() {
                 <span className="text-gray-400">{isOpen ? '▲' : '▼'}</span>
               </button>
 
-              <Link
-                href={`/test/${set.id}`}
-                className="mt-2 inline-block text-xs text-gray-500 hover:text-primary-600 hover:underline"
-              >
-                📝 アーカイブからテスト作成
-              </Link>
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <Link
+                  href={`/test/${set.id}`}
+                  className="text-xs text-gray-500 hover:text-primary-600 hover:underline"
+                >
+                  📝 アーカイブからテスト作成
+                </Link>
+                <button
+                  onClick={() => handleDownload(set.id)}
+                  disabled={downloadingId === set.id}
+                  className="text-xs text-sky-600 hover:underline disabled:opacity-50"
+                >
+                  {downloadingId === set.id
+                    ? 'ダウンロード中...'
+                    : downloaded
+                    ? `📥 更新する(${new Date(downloaded).toLocaleDateString('ja-JP')}時点)`
+                    : '📥 オフライン用にダウンロード'}
+                </button>
+              </div>
 
               {isOpen && (
                 <div className="mt-3 grid grid-cols-2 gap-2">

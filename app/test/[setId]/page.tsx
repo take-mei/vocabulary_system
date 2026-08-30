@@ -7,6 +7,8 @@ import { GeneratedPassage } from '@/lib/gemini';
 import { MODE_LABELS, MODES_BY_TYPE, QuizMode, Word, WordSet } from '@/lib/types';
 import NavHeader from '@/components/NavHeader';
 import PdfExportButton from '@/components/PdfExportButton';
+import GeminiQuotaBadge from '@/components/GeminiQuotaBadge';
+import { getGeminiRemainingToday, recordGeminiUsage } from '@/lib/geminiQuota';
 
 const FRONT_IS_WORD: QuizMode[] = ['en_to_jp', 'ko_to_gen'];
 
@@ -72,6 +74,10 @@ export default function ArchiveTestPage() {
 
   async function generatePassage() {
     if (selectedWords.length === 0) return;
+    if (getGeminiRemainingToday() <= 0) {
+      setPassageError('本日のGemini利用上限に達しています。日を改めて実行してください。');
+      return;
+    }
     setGeneratingPassage(true);
     setPassageError(null);
     setPassage(null);
@@ -85,6 +91,7 @@ export default function ArchiveTestPage() {
       if (!res.ok) {
         setPassageError(json.error ?? '長文問題の生成に失敗しました');
       } else {
+        recordGeminiUsage();
         setPassage(json.data as GeneratedPassage);
         setShowPassageAnswers(false);
       }
@@ -196,7 +203,10 @@ export default function ArchiveTestPage() {
           {set?.type === 'english' && (
             <section className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <h2 className="font-bold">長文読解問題(Gemini生成)</h2>
+                <div className="flex items-center gap-2">
+                  <h2 className="font-bold">長文読解問題(Gemini生成)</h2>
+                  <GeminiQuotaBadge />
+                </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     onClick={generatePassage}

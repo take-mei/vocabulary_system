@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
   } catch (e: any) {
     return NextResponse.json(
       { error: e?.message ?? '難易度判定に失敗しました' },
-      { status: 500 }
+      { status: e?.status === 429 ? 429 : 500 }
     );
   }
 }

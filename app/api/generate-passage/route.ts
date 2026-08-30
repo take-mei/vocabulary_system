@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
   } catch (e: any) {
     return NextResponse.json(
       { error: e?.message ?? '長文問題の生成に失敗しました' },
-      { status: 500 }
+      { status: e?.status === 429 ? 429 : 500 }
     );
   }
 }

@@ -5,6 +5,29 @@ import { WordSetType } from '@/lib/types';
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 
+// Gemini APIからのエラーをHTTPステータス付きで表現する。
+// 429(利用上限到達)かどうかを呼び出し側(APIルート・管理画面)で判別できるようにする。
+export class GeminiApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'GeminiApiError';
+    this.status = status;
+  }
+}
+
+async function throwGeminiError(res: Response): Promise<never> {
+  const errText = await res.text().catch(() => '');
+  if (res.status === 429) {
+    throw new GeminiApiError(
+      'Gemini APIの利用上限(レート制限/1日の無料枠)に達しました。時間を置くか、翌日以降に再試行してください。' +
+        `詳細: ${errText.slice(0, 300)}`,
+      429
+    );
+  }
+  throw new GeminiApiError(`Gemini APIエラー(${res.status}): ${errText}`, res.status);
+}
+
 export interface DifficultyInput {
   word: string;
   mean: string;
@@ -39,8 +62,7 @@ export async function getDifficultyFromGemini(input: DifficultyInput): Promise<n
   });
 
   if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`Gemini APIエラー(${res.status}): ${errText}`);
+    await throwGeminiError(res);
   }
 
   const json = await res.json();
@@ -160,8 +182,7 @@ ${wordList}
   });
 
   if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`Gemini APIエラー(${res.status}): ${errText}`);
+    await throwGeminiError(res);
   }
 
   const json = await res.json();
@@ -260,8 +281,7 @@ export async function getTranslationFromGemini(
   });
 
   if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`Gemini APIエラー(${res.status}): ${errText}`);
+    await throwGeminiError(res);
   }
 
   const json = await res.json();

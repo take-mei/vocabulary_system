@@ -14,6 +14,13 @@ import {
 } from '@/lib/types';
 import NavHeader from '@/components/NavHeader';
 import FlashCard from '@/components/FlashCard';
+import {
+  enqueuePendingAction,
+  getOfflineSet,
+  removeWordFromOfflineCache,
+  saveOfflineSet,
+  updateOfflineProficiency,
+} from '@/lib/offlineStore';
 
 const FRONT_IS_WORD: QuizMode[] = ['en_to_jp', 'ko_to_gen'];
 
@@ -40,18 +47,18 @@ function pickWeightedIndex(weights: number[], total: number): number {
   return weights.length - 1;
 }
 
-// 重み付きの重複ありサンプリングでcount件分の出題順(インデックス配列)を作る。
+// 重み付きの重複ありサンプリングでcount件分の出題順(単語IDの配列)を作る。
 // 同じ単語が連続しないよう簡易的に1回だけ引き直す。
-function buildWeightedQueue(weights: number[], count: number): number[] {
+function buildWeightedQueue(words: Word[], weights: number[], count: number): string[] {
   const total = weights.reduce((a, b) => a + b, 0);
-  const queue: number[] = [];
+  const queue: string[] = [];
   let prevIndex = -1;
   for (let i = 0; i < count; i++) {
     let idx = pickWeightedIndex(weights, total);
     if (idx === prevIndex && weights.length > 1) {
       idx = pickWeightedIndex(weights, total);
     }
-    queue.push(idx);
+    queue.push(words[idx].id);
     prevIndex = idx;
   }
   return queue;
@@ -66,8 +73,10 @@ export default function QuizPage() {
   const [set, setSet] = useState<WordSet | null>(null);
   const [words, setWords] = useState<Word[]>([]);
   const [proficiencyMap, setProficiencyMap] = useState<Map<string, number>>(new Map());
-  const [queue, setQueue] = useState<number[]>([]);
+  const [queue, setQueue] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isOfflineMode, setIsOfflineMode] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [pos, setPos] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [results, setResults] = useState<{ correct: number; wrong: number }>({
@@ -75,46 +84,93 @@ export default function QuizPage() {
     wrong: 0,
   });
   const [finished, setFinished] = useState(false);
+  const [archiving, setArchiving] = useState(false);
 
   useEffect(() => {
     (async () => {
-      const { data: setData } = await supabase
-        .from('word_sets')
-        .select('*')
-        .eq('id', setId)
-        .single();
-      // アーカイブ済み(チェック済み)の単語は出題対象から除外する
-      const { data: wordData } = await supabase
-        .from('words')
-        .select('*')
-        .eq('set_id', setId)
-        .eq('archived', false);
+      setLoadError(null);
 
-      if (setData) setSet(setData as WordSet);
+      // オンラインならまずSupabaseから最新を取りに行く。失敗したらオフラインキャッシュにフォールバック。
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        try {
+          const { data: setData, error: setErr } = await supabase
+            .from('word_sets')
+            .select('*')
+            .eq('id', setId)
+            .single();
+          const { data: wordData, error: wordErr } = await supabase
+            .from('words')
+            .select('*')
+            .eq('set_id', setId)
+            .eq('archived', false);
 
-      const wordList = (wordData as Word[]) ?? [];
-      setWords(wordList);
+          if (setErr || wordErr || !setData) throw new Error(setErr?.message ?? wordErr?.message);
 
-      let profMap = new Map<string, number>();
-      if (wordList.length > 0) {
-        const { data: profData } = await supabase
-          .from('word_proficiency')
-          .select('*')
-          .in('word_id', wordList.map((w) => w.id));
-        (profData as WordProficiency[] | null)?.forEach((p) => {
-          profMap.set(p.word_id, p.level);
-        });
+          const wordList = (wordData as Word[]) ?? [];
+          setSet(setData as WordSet);
+          setWords(wordList);
+
+          let profMap = new Map<string, number>();
+          if (wordList.length > 0) {
+            const { data: profData } = await supabase
+              .from('word_proficiency')
+              .select('*')
+              .in('word_id', wordList.map((w) => w.id));
+            (profData as WordProficiency[] | null)?.forEach((p) => {
+              profMap.set(p.word_id, p.level);
+            });
+          }
+          setProficiencyMap(profMap);
+
+          const weights = wordList.map((w) => calcWeight(w, profMap.get(w.id) ?? 1));
+          setQueue(wordList.length ? buildWeightedQueue(wordList, weights, wordList.length) : []);
+          setIsOfflineMode(false);
+
+          // 次回オフラインでも使えるよう、取得できたデータでローカルキャッシュも更新しておく
+          const proficiencyObj: Record<string, number> = {};
+          profMap.forEach((v, k) => (proficiencyObj[k] = v));
+          saveOfflineSet({
+            setId,
+            setName: (setData as WordSet).name,
+            setType: (setData as WordSet).type,
+            words: wordList,
+            proficiency: proficiencyObj,
+            downloadedAt: new Date().toISOString(),
+          });
+
+          setLoading(false);
+          return;
+        } catch {
+          // 通信エラーなどの場合はオフラインキャッシュにフォールバックする
+        }
       }
-      setProficiencyMap(profMap);
 
-      const weights = wordList.map((w) => calcWeight(w, profMap.get(w.id) ?? 1));
-      setQueue(wordList.length ? buildWeightedQueue(weights, wordList.length) : []);
-
+      // オフライン、またはオンライン取得に失敗した場合はローカルキャッシュを使う
+      const offline = getOfflineSet(setId);
+      if (offline) {
+        setSet({
+          id: offline.setId,
+          name: offline.setName,
+          type: offline.setType,
+          description: null,
+          created_at: offline.downloadedAt,
+        });
+        setWords(offline.words);
+        const profMap = new Map<string, number>(Object.entries(offline.proficiency));
+        setProficiencyMap(profMap);
+        const weights = offline.words.map((w) => calcWeight(w, profMap.get(w.id) ?? 1));
+        setQueue(offline.words.length ? buildWeightedQueue(offline.words, weights, offline.words.length) : []);
+        setIsOfflineMode(true);
+      } else {
+        setLoadError(
+          'オフラインで、この単語帳のダウンロード済みデータもありません。Wi-Fiがある時にホーム画面から「オフライン用にダウンロード」しておいてください。'
+        );
+      }
       setLoading(false);
     })();
   }, [setId]);
 
-  const current = words[queue[pos]];
+  const current = words.find((w) => w.id === queue[pos]);
   const frontIsWord = FRONT_IS_WORD.includes(mode);
 
   const frontText = current ? (frontIsWord ? current.word : current.mean) : '';
@@ -145,20 +201,34 @@ export default function QuizPage() {
       wrong: r.wrong + (isCorrect ? 0 : 1),
     }));
 
-    // 学習ログを記録し、単語ごとの現在の習熟度も更新する(失敗しても学習体験は止めない)
-    supabase
-      .from('study_logs')
-      .insert({ word_id: current.id, set_id: setId, mode, is_correct: isCorrect, level })
-      .then(() => {});
+    const online = typeof navigator !== 'undefined' && navigator.onLine;
 
-    supabase
-      .from('word_proficiency')
-      .upsert(
-        { word_id: current.id, level, updated_at: new Date().toISOString() },
-        { onConflict: 'word_id' }
-      )
-      .then(() => {});
+    if (online) {
+      // 学習ログを記録し、単語ごとの現在の習熟度も更新する(失敗しても学習体験は止めない)
+      supabase
+        .from('study_logs')
+        .insert({ word_id: current.id, set_id: setId, mode, is_correct: isCorrect, level })
+        .then(() => {});
+      supabase
+        .from('word_proficiency')
+        .upsert(
+          { word_id: current.id, level, updated_at: new Date().toISOString() },
+          { onConflict: 'word_id' }
+        )
+        .then(() => {});
+    } else {
+      // オフライン時は未送信キューに積んでおき、オンライン復帰時にまとめて送信する
+      enqueuePendingAction({
+        type: 'study_log',
+        payload: { word_id: current.id, set_id: setId, mode, is_correct: isCorrect, level },
+      });
+      enqueuePendingAction({
+        type: 'proficiency',
+        payload: { word_id: current.id, level, updated_at: new Date().toISOString() },
+      });
+    }
 
+    updateOfflineProficiency(setId, current.id, level);
     setProficiencyMap((m) => {
       const next = new Map(m);
       next.set(current.id, level);
@@ -173,9 +243,47 @@ export default function QuizPage() {
     }
   }
 
+  async function archiveCurrent() {
+    if (!current) return;
+    if (!confirm(`「${current.word}」をアーカイブして出題対象から外しますか？`)) return;
+
+    const wordId = current.id;
+    setArchiving(true);
+
+    // このセッション中、この単語が今後(前方も含め)出題キューに出てこないようにする
+    const removedBeforePos = queue.slice(0, pos).filter((id) => id === wordId).length;
+    const newQueue = queue.filter((id) => id !== wordId);
+    const newWords = words.filter((w) => w.id !== wordId);
+    const newPos = Math.max(pos - removedBeforePos, 0);
+
+    setWords(newWords);
+    setQueue(newQueue);
+    setPos(newPos);
+    setFlipped(false);
+    if (newPos >= newQueue.length) setFinished(true);
+
+    const online = typeof navigator !== 'undefined' && navigator.onLine;
+    if (online) {
+      try {
+        await fetch('/api/words/archive', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: [wordId], archived: true }),
+        });
+      } catch {
+        enqueuePendingAction({ type: 'archive', payload: { ids: [wordId], archived: true } });
+      }
+    } else {
+      enqueuePendingAction({ type: 'archive', payload: { ids: [wordId], archived: true } });
+    }
+    removeWordFromOfflineCache(setId, wordId);
+
+    setArchiving(false);
+  }
+
   function restart() {
     const weights = words.map((w) => calcWeight(w, proficiencyMap.get(w.id) ?? 1));
-    setQueue(words.length ? buildWeightedQueue(weights, words.length) : []);
+    setQueue(words.length ? buildWeightedQueue(words, weights, words.length) : []);
     setPos(0);
     setFlipped(false);
     setResults({ correct: 0, wrong: 0 });
@@ -189,16 +297,29 @@ export default function QuizPage() {
         <button onClick={() => router.push('/')} className="text-sm text-gray-500 hover:underline">
           ← 単語帳選択に戻る
         </button>
-        <span className="rounded-full bg-primary-100 px-3 py-1 text-xs font-semibold text-primary-700">
-          {MODE_LABELS[mode]}
-        </span>
+        <div className="flex items-center gap-2">
+          {isOfflineMode && (
+            <span className="rounded-full bg-gray-200 px-2 py-1 text-xs font-semibold text-gray-600">
+              📴 オフラインデータ
+            </span>
+          )}
+          <span className="rounded-full bg-primary-100 px-3 py-1 text-xs font-semibold text-primary-700">
+            {MODE_LABELS[mode]}
+          </span>
+        </div>
       </div>
 
       {set && <h1 className="mb-4 text-lg font-bold">{set.name}</h1>}
 
       {loading && <p className="text-gray-400">読み込み中...</p>}
 
-      {!loading && queue.length === 0 && (
+      {!loading && loadError && (
+        <div className="rounded-xl border border-dashed border-gray-300 bg-white/60 p-6 text-center text-gray-500">
+          {loadError}
+        </div>
+      )}
+
+      {!loading && !loadError && queue.length === 0 && (
         <div className="rounded-xl border border-dashed border-gray-300 bg-white/60 p-6 text-center text-gray-500">
           出題できる単語がありません。(単語が未登録、または全てアーカイブ済みです)
         </div>
@@ -235,8 +356,18 @@ export default function QuizPage() {
             onSpeak={speakCurrent}
           />
 
+          <div className="mt-3 text-center">
+            <button
+              onClick={archiveCurrent}
+              disabled={archiving}
+              className="text-xs text-gray-400 hover:text-red-500 hover:underline disabled:opacity-50"
+            >
+              🗄 この単語をアーカイブする(出題対象から外す)
+            </button>
+          </div>
+
           {flipped ? (
-            <div className="mt-6">
+            <div className="mt-4">
               <p className="mb-2 text-center text-xs text-gray-400">
                 習熟度を5段階で自己評価してください
               </p>
@@ -256,7 +387,7 @@ export default function QuizPage() {
               </div>
             </div>
           ) : (
-            <p className="mt-6 text-center text-sm text-gray-400">
+            <p className="mt-4 text-center text-sm text-gray-400">
               カードをタップして答えを確認してください
             </p>
           )}
@@ -267,8 +398,12 @@ export default function QuizPage() {
         <div className="rounded-2xl bg-white p-6 text-center shadow-sm ring-1 ring-black/5">
           <h2 className="mb-2 text-xl font-bold">おつかれさまでした！</h2>
           <p className="mb-4 text-gray-500">
-            習熟度4以上 {results.correct} / {queue.length}
-            (良好率 {queue.length ? Math.round((results.correct / queue.length) * 100) : 0}%)
+            習熟度4以上 {results.correct} / {results.correct + results.wrong}
+            (良好率{' '}
+            {results.correct + results.wrong
+              ? Math.round((results.correct / (results.correct + results.wrong)) * 100)
+              : 0}
+            %)
           </p>
           <div className="flex justify-center gap-3">
             <button onClick={restart} className="rounded-xl bg-primary-600 px-5 py-2 font-semibold text-white">

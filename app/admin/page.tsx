@@ -5,6 +5,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Word, WordSet, WordSetType } from '@/lib/types';
 import NavHeader from '@/components/NavHeader';
 import ImportCsv from '@/components/ImportCsv';
+import GeminiQuotaBadge from '@/components/GeminiQuotaBadge';
+import { GEMINI_DAILY_LIMIT, getGeminiRemainingToday, recordGeminiUsage } from '@/lib/geminiQuota';
 
 type SortKey = 'created_desc' | 'difficulty_desc' | 'difficulty_asc' | 'importance_desc';
 
@@ -214,6 +216,10 @@ export default function AdminPage() {
   }
 
   async function judgeDifficulty(wordId: string) {
+    if (getGeminiRemainingToday() <= 0) {
+      alert(`本日のGemini利用上限(自己集計で${GEMINI_DAILY_LIMIT}件)に達しています。日を改めて実行してください。`);
+      return;
+    }
     setJudgingWordId(wordId);
     try {
       const res = await fetch('/api/difficulty', {
@@ -224,8 +230,9 @@ export default function AdminPage() {
       const json = await res.json();
       if (!res.ok) {
         alert(`難易度判定に失敗しました: ${json.error ?? '不明なエラー'}`);
-      } else if (selectedSetId) {
-        await loadWords(selectedSetId);
+      } else {
+        recordGeminiUsage();
+        if (selectedSetId) await loadWords(selectedSetId);
       }
     } finally {
       setJudgingWordId(null);
@@ -261,32 +268,66 @@ export default function AdminPage() {
       setBulkStatus('未判定の単語はありません');
       return;
     }
-    if (
-      !confirm(
-        `未判定の単語${target.length}件をGeminiで判定します。件数が多いと数分かかることがあります。続行しますか？`
-      )
-    )
+
+    const remainingToday = getGeminiRemainingToday();
+    if (remainingToday <= 0) {
+      setBulkStatus(
+        `本日のGemini利用上限(自己集計で${GEMINI_DAILY_LIMIT}件)に達しています。日を改めて実行してください。`
+      );
       return;
+    }
+
+    // 1日の上限を超えないよう、今日処理する分だけを切り出す。
+    // 残りは翌日以降に同じボタンを押せば続きから処理される(difficultyが未判定の単語だけを対象にしているため)。
+    const toProcess = target.slice(0, remainingToday);
+    const remainingAfterToday = target.length - toProcess.length;
+
+    const confirmMessage =
+      remainingAfterToday > 0
+        ? `未判定の単語は${target.length}件ありますが、本日判定できるのは残り${toProcess.length}件までです(1日の上限: ${GEMINI_DAILY_LIMIT}件)。\n今日は${toProcess.length}件を処理し、残り${remainingAfterToday}件は翌日以降にこのボタンで続きから処理してください。続行しますか？`
+        : `未判定の単語${toProcess.length}件をGeminiで判定します。件数が多いと数分かかることがあります。続行しますか？`;
+
+    if (!confirm(confirmMessage)) return;
 
     setBulkJudging(true);
     let done = 0;
     let failed = 0;
-    for (const w of target) {
+    let stoppedByQuota = false;
+    for (const w of toProcess) {
       try {
         const res = await fetch('/api/difficulty', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ word_id: w.id }),
         });
-        if (res.ok) done += 1;
-        else failed += 1;
+        if (res.ok) {
+          done += 1;
+          recordGeminiUsage();
+        } else if (res.status === 429) {
+          // 自己集計のカウンタとGoogle側の実際のクォータがズレている場合の最終防御。
+          // これ以上呼び出しても無駄になるため即中断する。
+          stoppedByQuota = true;
+          break;
+        } else {
+          failed += 1;
+        }
       } catch {
         failed += 1;
       }
-      setBulkStatus(`判定中... ${done + failed} / ${target.length}件(失敗${failed}件)`);
+      setBulkStatus(`判定中... ${done + failed} / ${toProcess.length}件(失敗${failed}件)`);
       await sleep(150); // APIのレート制限に配慮して少し間隔を空ける
     }
-    setBulkStatus(`完了: 成功${done}件 / 失敗${failed}件 / 全${target.length}件`);
+    if (stoppedByQuota) {
+      setBulkStatus(
+        `Gemini APIの利用上限(1日の無料枠)に達したため中断しました。成功${done}件 / 対象${toProcess.length}件。時間を置くか翌日以降に再試行してください。`
+      );
+    } else if (remainingAfterToday > 0) {
+      setBulkStatus(
+        `本日分完了: 成功${done}件 / 失敗${failed}件 / 対象${toProcess.length}件。残り${remainingAfterToday}件は翌日以降にこのボタンで続きから処理できます。`
+      );
+    } else {
+      setBulkStatus(`完了: 成功${done}件 / 失敗${failed}件 / 全${toProcess.length}件`);
+    }
     setBulkJudging(false);
     await loadWords(selectedSetId);
   }
@@ -465,6 +506,7 @@ export default function AdminPage() {
               </label>
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              <GeminiQuotaBadge />
               {bulkStatus && <span className="text-xs text-gray-500">{bulkStatus}</span>}
               <button
                 onClick={judgeAllDifficulty}

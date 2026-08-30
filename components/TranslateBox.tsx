@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import { WordSetType } from '@/lib/types';
+import { getGeminiRemainingToday, recordGeminiUsage } from '@/lib/geminiQuota';
+import GeminiQuotaBadge from '@/components/GeminiQuotaBadge';
 
 interface TranslationResult {
   mean: string;
@@ -19,6 +21,11 @@ export default function TranslateBox() {
     e.preventDefault();
     if (!word.trim()) return;
 
+    if (getGeminiRemainingToday() <= 0) {
+      setError('本日のGemini利用上限に達しています。日を改めて実行してください。');
+      return;
+    }
+
     setLoading(true);
     setError(null);
     setResult(null);
@@ -32,6 +39,7 @@ export default function TranslateBox() {
       if (!res.ok) {
         setError(json.error ?? '翻訳に失敗しました');
       } else {
+        recordGeminiUsage();
         setResult({ mean: json.mean, phonetic: json.phonetic ?? null });
       }
     } catch {
@@ -43,7 +51,10 @@ export default function TranslateBox() {
 
   return (
     <section className="mb-6 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
-      <h2 className="mb-3 font-bold">🔤 単語を翻訳</h2>
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="font-bold">🔤 単語を翻訳</h2>
+        <GeminiQuotaBadge />
+      </div>
       <form onSubmit={handleTranslate} className="grid grid-cols-1 gap-2 sm:grid-cols-4">
         <input
           value={word}

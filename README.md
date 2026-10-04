@@ -35,6 +35,7 @@
    1. `supabase/schema.sql` … `word_sets` / `words` / `study_logs` の基本テーブル
    2. `supabase/migration_2_gemini_proficiency.sql` … 難易度・重要度・5段階習熟度対応
    3. `supabase/migration_3_phonetic_archive.sql` … 発音記号・アーカイブ対応
+   4. `supabase/migration_4_auth.sql` … ログイン用の `app_users` テーブル
 4. **Project Settings > API** から以下をコピー
    - Project URL → `NEXT_PUBLIC_SUPABASE_URL`
    - `anon` `public` キー → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
@@ -42,13 +43,24 @@
 5. [Google AI Studio](https://aistudio.google.com/app/apikey) でGemini APIキーを発行 → `GEMINI_API_KEY`
    - 発音記号の取得(dictionaryapi.dev)にはAPIキー不要です
 
+### 1.5 ログインユーザーを登録
+
+ID・パスワードはDBの `app_users` テーブルで管理します(パスワードはscryptでハッシュ化して保存)。
+ユーザーを追加・パスワードを変更するには、ローカルで次を実行して出力されたSQLをSupabaseのSQL Editorで実行します。
+
+```bash
+node scripts/hash-password.mjs <ID> <パスワード>
+```
+
+同じIDで再実行して出力SQLを流すと、パスワードが上書きされます。ユーザー削除は `delete from app_users where username = '...';` です。
+
 ### 2. 環境変数を設定
 
 ```bash
 cp .env.local.example .env.local
 ```
 
-`.env.local` を開いて、上でコピーした値を貼り付けてください。
+`.env.local` を開いて、上でコピーした値を貼り付けてください。`AUTH_SECRET`(ログインセッションの署名鍵)は `openssl rand -base64 32` などで生成したランダム文字列を設定します。Vercelの環境変数にも同じ名前で設定してください。
 
 ### 3. ローカルで起動
 
@@ -101,11 +113,9 @@ http://localhost:3000 で以下のページが使えます。
 
 ## 現状の制限・今後の拡張ポイント
 
-- **管理者画面は現在認証なし**でアクセスできます。公開後は以下のいずれかで保護することを推奨します。
-  - Vercelの「Password Protection」機能(Pro以上)
-  - `/admin` 配下にBasic認証をかけるmiddleware.tsの追加
-  - Supabase Authを使ったログイン画面の追加(将来的にユーザーごとの学習履歴管理にも拡張可能)
-- 現在は学習ログにユーザー識別子がないため、全員の記録が1つに集計されます。個人ごとに分けたい場合はSupabase Authの導入が必要です。
+- **ログイン(ID/パスワード)**: `middleware.ts` で全ページ・全APIをログイン必須にしています(`/login` を除く)。セッションは署名付きCookie(30日)です。ログインしたユーザーは管理者画面を含む全機能を使えます(権限の区別はありません)。
+- **注意**: 一部の画面(単語帳一覧・出題・統計)はブラウザからSupabaseをanonキーで直接読み書きしています。そのためログイン画面は「アプリの入口」を守りますが、anonキーを知っている人がSupabaseに直接アクセスすることまでは防げません。完全に守るには、これらもAPIルート経由にしたうえで、各テーブルのRLSでanonキーのアクセスを禁止する必要があります。
+- 現在は学習ログにユーザー識別子がないため、全員の記録が1つに集計されます。個人ごとに分けたい場合は `study_logs` などに `user_id` を持たせる拡張が必要です。
 - CSVの文字コードはUTF-8を想定しています。Excelで作成したCSVがShift-JISの場合、文字化けすることがあるため「UTF-8で保存」してから読み込んでください。
 - 発音記号は英単語のみ対応です(dictionaryapi.devの仕様上、古語には対応していません)。
 - 音声再生はブラウザ標準のWeb Speech APIを使用しているため、端末やブラウザによって声質・対応言語が異なります。古文単語は現代日本語の読み上げになるため、古典的な発音の再現ではない点にご注意ください。

@@ -1,7 +1,7 @@
 // シンプルなService Worker。
 // 目的: 一度開いたページのJS/CSS/HTMLをキャッシュしておき、電波が弱い/オフラインの時でも
 // 「アプリの見た目」自体は開けるようにする(データはlib/offlineStore.tsのlocalStorageキャッシュを使う)。
-const CACHE_NAME = 'word-app-shell-v1';
+const CACHE_NAME = 'word-app-shell-v2';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
@@ -25,6 +25,9 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
+  // ログイン関連はキャッシュしない(ログアウト後に古い内容が出たり、ログイン状態が混ざるのを防ぐ)
+  if (url.pathname === '/login' || url.pathname.startsWith('/api/auth/')) return;
+
   // Next.jsのビルド成果物(ハッシュ付きファイル名)はcache-first: 一度取得したら再ダウンロード不要
   if (url.pathname.startsWith('/_next/static/')) {
     event.respondWith(
@@ -45,7 +48,8 @@ self.addEventListener('fetch', (event) => {
       try {
         const res = await fetch(request);
         const cache = await caches.open(CACHE_NAME);
-        if (res.ok) cache.put(request, res.clone());
+        // リダイレクト(未ログイン時の/loginへの転送など)はキャッシュしない
+        if (res.ok && !res.redirected) cache.put(request, res.clone());
         return res;
       } catch {
         const cache = await caches.open(CACHE_NAME);

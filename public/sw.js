@@ -1,7 +1,7 @@
 // シンプルなService Worker。
 // 目的: 一度開いたページのJS/CSS/HTMLをキャッシュしておき、電波が弱い/オフラインの時でも
 // 「アプリの見た目」自体は開けるようにする(データはlib/offlineStore.tsのlocalStorageキャッシュを使う)。
-const CACHE_NAME = 'word-app-shell-v2';
+const CACHE_NAME = 'word-app-shell-v3';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
@@ -26,7 +26,15 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return;
 
   // ログイン関連はキャッシュしない(ログアウト後に古い内容が出たり、ログイン状態が混ざるのを防ぐ)
-  if (url.pathname === '/login' || url.pathname.startsWith('/api/auth/')) return;
+  // 管理者認証・ユーザー管理(/admin/login, /api/admin/*)も同様にキャッシュしない
+  if (
+    url.pathname === '/login' ||
+    url.pathname === '/admin/login' ||
+    url.pathname.startsWith('/api/auth/') ||
+    url.pathname.startsWith('/api/admin/')
+  ) {
+    return;
+  }
 
   // Next.jsのビルド成果物(ハッシュ付きファイル名)はcache-first: 一度取得したら再ダウンロード不要
   if (url.pathname.startsWith('/_next/static/')) {

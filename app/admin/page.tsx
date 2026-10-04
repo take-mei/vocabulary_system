@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Word, WordSet, WordSetType } from '@/lib/types';
 import NavHeader from '@/components/NavHeader';
 import ImportCsv from '@/components/ImportCsv';
+import AdminUsers from '@/components/AdminUsers';
 import GeminiQuotaBadge from '@/components/GeminiQuotaBadge';
 import { GEMINI_DAILY_LIMIT, getGeminiRemainingToday, recordGeminiUsage } from '@/lib/geminiQuota';
 
@@ -368,7 +369,18 @@ export default function AdminPage() {
   return (
     <main>
       <NavHeader />
-      <h1 className="mb-4 text-xl font-bold">管理者画面</h1>
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-xl font-bold">管理者画面</h1>
+        <button
+          onClick={async () => {
+            await fetch('/api/admin/logout', { method: 'POST' }).catch(() => {});
+            window.location.href = '/';
+          }}
+          className="text-xs text-gray-500 hover:underline"
+        >
+          管理者モードを終了
+        </button>
+      </div>
 
       {/* 単語帳の作成 */}
       <section className="mb-6 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
@@ -710,6 +722,9 @@ export default function AdminPage() {
           </div>
         </section>
       )}
+
+      {/* ログインユーザー管理 */}
+      <AdminUsers />
     </main>
   );
 }

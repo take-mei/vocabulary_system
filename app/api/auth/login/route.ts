@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
 
   const { data: user, error } = await supabaseAdmin
     .from('app_users')
-    .select('username, password_hash')
+    .select('id, username, password_hash')
     .eq('username', username.trim())
     .maybeSingle();
 
@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
 
   let token: string;
   try {
-    token = await createSessionToken(user.username);
+    token = await createSessionToken({ userId: user.id, username: user.username });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? '認証設定エラー' }, { status: 500 });
   }

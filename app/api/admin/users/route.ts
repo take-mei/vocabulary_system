@@ -5,14 +5,14 @@ import { SESSION_COOKIE, verifySessionToken } from '@/lib/auth';
 
 export const runtime = 'nodejs';
 
-// 認証はmiddlewareで済んでいる(管理者認証必須)。password_hashは絶対に返さない。
+// 認証・管理者権限の確認はmiddlewareで済んでいる。password_hashは絶対に返さない。
 
 export async function GET(req: NextRequest) {
   const session = await verifySessionToken(req.cookies.get(SESSION_COOKIE)?.value);
 
   const { data, error } = await supabaseAdmin
     .from('app_users')
-    .select('id, username, created_at')
+    .select('id, username, role, created_at')
     .order('created_at', { ascending: true });
 
   if (error) {
@@ -22,6 +22,7 @@ export async function GET(req: NextRequest) {
     data: (data ?? []).map((u) => ({
       id: u.id,
       username: u.username,
+      role: u.role === 'admin' ? 'admin' : 'user',
       created_at: u.created_at,
       is_current: u.id === session?.userId,
     })),
@@ -30,7 +31,11 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
-  const { username, password } = body as { username?: unknown; password?: unknown };
+  const { username, password, role } = body as {
+    username?: unknown;
+    password?: unknown;
+    role?: unknown;
+  };
 
   if (typeof username !== 'string' || typeof password !== 'string') {
     return NextResponse.json({ error: 'IDとパスワードは必須です' }, { status: 400 });
@@ -45,12 +50,13 @@ export async function POST(req: NextRequest) {
   if (password.length < 8 || password.length > 200) {
     return NextResponse.json({ error: 'パスワードは8文字以上200文字以下にしてください' }, { status: 400 });
   }
+  const newRole = role === 'admin' ? 'admin' : 'user';
 
   const password_hash = await hashPassword(password);
   const { data, error } = await supabaseAdmin
     .from('app_users')
-    .insert({ username: name, password_hash })
-    .select('id, username, created_at')
+    .insert({ username: name, password_hash, role: newRole })
+    .select('id, username, role, created_at')
     .single();
 
   if (error) {
@@ -61,6 +67,6 @@ export async function POST(req: NextRequest) {
   }
   // select()で絞っているが、念のためハッシュが絶対に混ざらないよう返す項目を明示する
   return NextResponse.json({
-    data: { id: data.id, username: data.username, created_at: data.created_at },
+    data: { id: data.id, username: data.username, role: data.role, created_at: data.created_at },
   });
 }

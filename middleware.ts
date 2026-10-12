@@ -1,51 +1,54 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { ADMIN_COOKIE, SESSION_COOKIE, verifyAdminToken, verifySessionToken } from '@/lib/auth';
+import { SESSION_COOKIE, verifySessionToken } from '@/lib/auth';
 
-// middleware(Edge Runtime)から使う。Node専用モジュールをimportしないこと。
-//
-// セッション(JWT)は署名が正しければ有効期限まで通ってしまうため、
-// 管理画面でユーザーを削除しても、そのままだと最大30日ログインしたままになる。
-// それを防ぐため、ユーザーがDBにまだ存在するかをSupabaseに問い合わせる。
-// リクエストごとに問い合わせると遅いので、同じインスタンス内で短時間だけ結果をキャッシュする。
-// => 削除から最大でおよそ TTL 秒後に、そのユーザーはログアウト状態になる。
+// ---------------------------------------------------------------
+// ユーザーの存在とロール(user/admin)をDBで確認する。
+//  - 削除されたユーザーは、セッション(JWT)が有効でもログアウト扱いにする
+//  - 管理者かどうかは毎回DBの app_users.role で判断する(JWTには入れない)
+// リクエストごとに問い合わせると遅いので、同じインスタンス内で30秒だけ結果をキャッシュする。
+// => 削除/権限変更は、最大でおよそ30秒後に反映される。
+// ---------------------------------------------------------------
+type Role = 'user' | 'admin';
+type UserCheck = { status: 'ok'; role: Role } | { status: 'gone' } | { status: 'unknown' };
+
 const TTL_MS = 30_000;
-const verifiedUntil = new Map<string, number>();
+const cache = new Map<string, { role: Role; until: number }>();
 
-export async function userStillExists(userId: string): Promise<boolean> {
+async function checkUser(userId: string): Promise<UserCheck> {
   const now = Date.now();
-  const cached = verifiedUntil.get(userId);
-  if (cached && cached > now) return true;
+  const cached = cache.get(userId);
+  if (cached && cached.until > now) return { status: 'ok', role: cached.role };
 
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) return true; // 設定不備はここでは判断しない(APIルート側でエラーになる)
+  if (!url || !key) return { status: 'unknown' };
 
   try {
     const res = await fetch(
-      `${url}/rest/v1/app_users?select=id&id=eq.${encodeURIComponent(userId)}&limit=1`,
+      `${url}/rest/v1/app_users?select=role&id=eq.${encodeURIComponent(userId)}&limit=1`,
       { headers: { apikey: key, Authorization: `Bearer ${key}` }, cache: 'no-store' }
     );
-    if (!res.ok) return true; // Supabase側の一時的な不調でログイン済みの人を締め出さない
-    const rows = (await res.json()) as unknown[];
+    // Supabase側の一時的な不調やrole列が未作成の場合は「不明」。
+    // 一般の画面は通すが、管理者向けの画面/APIは通さない。
+    if (!res.ok) return { status: 'unknown' };
+    const rows = (await res.json()) as { role?: string }[];
     if (rows.length === 0) {
-      verifiedUntil.delete(userId);
-      return false;
+      cache.delete(userId);
+      return { status: 'gone' };
     }
-    if (verifiedUntil.size > 500) verifiedUntil.clear();
-    verifiedUntil.set(userId, now + TTL_MS);
-    return true;
+    const role: Role = rows[0].role === 'admin' ? 'admin' : 'user';
+    if (cache.size > 500) cache.clear();
+    cache.set(userId, { role, until: now + TTL_MS });
+    return { status: 'ok', role };
   } catch {
-    return true;
+    return { status: 'unknown' };
   }
 }
 
 // ログインページ・認証API・Service Workerは未ログインでもアクセスできる。
 const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/logout', '/sw.js'];
 
-// 管理者パスワードの入力画面/APIは「ログイン済み」であれば開ける(管理者認証はまだ不要)。
-const ADMIN_AUTH_PATHS = ['/admin/login', '/api/admin/login', '/api/admin/logout'];
-
-// 管理者認証が必要なAPI。管理者画面でしか使わない書き込み系・管理系のAPIを守る。
+// 管理者(role=admin)だけが使えるページ/API。管理者画面でしか使わない書き込み系・管理系のAPIを守る。
 // (/api/words/archive は出題画面からも使うので対象外)
 const ADMIN_API_PREFIXES = [
   '/api/admin',
@@ -61,7 +64,6 @@ function matches(pathname: string, prefix: string) {
 }
 
 function needsAdmin(pathname: string): boolean {
-  if (ADMIN_AUTH_PATHS.includes(pathname)) return false;
   if (matches(pathname, '/admin')) return true;
   if (pathname === '/api/words/archive') return false;
   return ADMIN_API_PREFIXES.some((p) => matches(pathname, p));
@@ -91,29 +93,27 @@ export async function middleware(req: NextRequest) {
     }
     if (clearSession) {
       res.cookies.set(SESSION_COOKIE, '', { path: '/', maxAge: 0 });
-      res.cookies.set(ADMIN_COOKIE, '', { path: '/', maxAge: 0 });
     }
     return res;
   }
 
-  // 1) 通常ログイン
+  // 1) ログイン済みか
   const session = await verifySessionToken(req.cookies.get(SESSION_COOKIE)?.value);
   if (!session) return toLogin(false);
 
-  // 管理画面で削除されたユーザーのセッションは無効にする
-  if (!(await userStillExists(session.userId))) return toLogin(true);
+  // 2) ユーザーがまだ存在するか / ロールは何か
+  const check = await checkUser(session.userId);
+  if (check.status === 'gone') return toLogin(true);
 
-  // 2) 管理者パスワード
+  // 3) 管理者向けのページ/APIは role=admin のみ
   if (needsAdmin(pathname)) {
-    const isAdmin = await verifyAdminToken(req.cookies.get(ADMIN_COOKIE)?.value, session.userId);
-    if (!isAdmin) {
+    if (check.status !== 'ok' || check.role !== 'admin') {
       if (isApi) {
-        return NextResponse.json({ error: '管理者認証が必要です' }, { status: 403 });
+        return NextResponse.json({ error: '管理者権限が必要です' }, { status: 403 });
       }
       const url = req.nextUrl.clone();
-      url.pathname = '/admin/login';
+      url.pathname = '/';
       url.search = '';
-      if (pathname !== '/admin') url.searchParams.set('next', pathname + search);
       return NextResponse.redirect(url);
     }
   }

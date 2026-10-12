@@ -371,15 +371,9 @@ export default function AdminPage() {
       <NavHeader />
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-bold">管理者画面</h1>
-        <button
-          onClick={async () => {
-            await fetch('/api/admin/logout', { method: 'POST' }).catch(() => {});
-            window.location.href = '/';
-          }}
-          className="text-xs text-gray-500 hover:underline"
-        >
-          管理者モードを終了
-        </button>
+        <Link href="/" className="text-xs text-gray-500 hover:underline">
+          ホームへ戻る
+        </Link>
       </div>
 
       {/* 単語帳の作成 */}

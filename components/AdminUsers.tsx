@@ -77,7 +77,13 @@ export default function AdminUsers() {
   }
 
   async function handleDelete(user: AppUser) {
-    if (!confirm(`ユーザー「${user.username}」を削除しますか?\n(このユーザーはログインできなくなります)`)) return;
+    if (
+      !confirm(
+        `ユーザー「${user.username}」を削除しますか?\n\n` +
+          'このユーザーはログインできなくなり、登録した単語帳・単語・学習記録もすべて削除されます。元に戻せません。'
+      )
+    )
+      return;
     setError(null);
     setMessage(null);
     try {
@@ -148,7 +154,7 @@ export default function AdminUsers() {
       <h2 className="mb-1 font-bold">ログインアカウント管理</h2>
       <p className="mb-3 text-xs text-gray-500">
         一般ユーザーはアプリを使えます。管理者はそれに加えて、この管理者画面に入れます。
-        パスワードは8文字以上で、自由に変更できます(変更しても、ログイン済みの端末はログイン状態が続きます)。
+        パスワードは8文字以上で、自由に変更できます(変更しても、ログイン済みの端末はログイン状態が続きます)。単語帳などのデータはユーザーごとに別々で、管理者でも中身は見られません。
       </p>
 
       <form onSubmit={handleAdd} className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-4">

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { currentUserId, notFound, ownsSet, unauthorized } from '@/lib/userData';
 
 interface ImportRow {
   word: string;
@@ -8,7 +9,10 @@ interface ImportRow {
 }
 
 export async function POST(req: NextRequest) {
-  const body = await req.json();
+  const userId = await currentUserId(req);
+  if (!userId) return unauthorized();
+
+  const body = await req.json().catch(() => ({}));
   const { set_id, rows } = body as { set_id: string; rows: ImportRow[] };
 
   if (!set_id) {
@@ -20,10 +24,12 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
+  if (!(await ownsSet(userId, set_id))) return notFound('単語帳が見つかりません');
 
   const validRows = rows
     .filter((r) => r.word && r.mean)
     .map((r) => ({
+      user_id: userId,
       set_id,
       word: String(r.word).trim(),
       mean: String(r.mean).trim(),

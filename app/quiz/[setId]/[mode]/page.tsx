@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabaseClient';
 import {
   PROFICIENCY_LABELS,
   PROFICIENCY_LEVELS,
@@ -93,33 +92,17 @@ export default function QuizPage() {
       // オンラインならまずSupabaseから最新を取りに行く。失敗したらオフラインキャッシュにフォールバック。
       if (typeof navigator !== 'undefined' && navigator.onLine) {
         try {
-          const { data: setData, error: setErr } = await supabase
-            .from('word_sets')
-            .select('*')
-            .eq('id', setId)
-            .single();
-          const { data: wordData, error: wordErr } = await supabase
-            .from('words')
-            .select('*')
-            .eq('set_id', setId)
-            .eq('archived', false);
-
-          if (setErr || wordErr || !setData) throw new Error(setErr?.message ?? wordErr?.message);
-
-          const wordList = (wordData as Word[]) ?? [];
-          setSet(setData as WordSet);
+          const res = await fetch(`/api/study?set_id=${encodeURIComponent(setId)}`);
+          if (!res.ok) throw new Error('fetch failed');
+          const json = await res.json();
+          const setData = json.set as WordSet;
+          const wordList = (json.words as Word[]) ?? [];
+          setSet(setData);
           setWords(wordList);
 
-          let profMap = new Map<string, number>();
-          if (wordList.length > 0) {
-            const { data: profData } = await supabase
-              .from('word_proficiency')
-              .select('*')
-              .in('word_id', wordList.map((w) => w.id));
-            (profData as WordProficiency[] | null)?.forEach((p) => {
-              profMap.set(p.word_id, p.level);
-            });
-          }
+          const profMap = new Map<string, number>(
+            Object.entries((json.proficiency ?? {}) as Record<string, number>)
+          );
           setProficiencyMap(profMap);
 
           const weights = wordList.map((w) => calcWeight(w, profMap.get(w.id) ?? 1));
@@ -205,17 +188,30 @@ export default function QuizPage() {
 
     if (online) {
       // 学習ログを記録し、単語ごとの現在の習熟度も更新する(失敗しても学習体験は止めない)
-      supabase
-        .from('study_logs')
-        .insert({ word_id: current.id, set_id: setId, mode, is_correct: isCorrect, level })
-        .then(() => {});
-      supabase
-        .from('word_proficiency')
-        .upsert(
-          { word_id: current.id, level, updated_at: new Date().toISOString() },
-          { onConflict: 'word_id' }
-        )
-        .then(() => {});
+      const updatedAt = new Date().toISOString();
+      const queueForLater = () => {
+        enqueuePendingAction({
+          type: 'study_log',
+          payload: { word_id: current.id, set_id: setId, mode, is_correct: isCorrect, level },
+        });
+        enqueuePendingAction({
+          type: 'proficiency',
+          payload: { word_id: current.id, level, updated_at: updatedAt },
+        });
+      };
+      fetch('/api/study', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          log: { word_id: current.id, mode, is_correct: isCorrect, level },
+          proficiency: { word_id: current.id, level, updated_at: updatedAt },
+        }),
+      })
+        .then((res) => {
+          // 通信はできたが保存に失敗した場合は、後で再送できるようキューに積む(404=単語が無いので除く)
+          if (!res.ok && res.status !== 404) queueForLater();
+        })
+        .catch(queueForLater);
     } else {
       // オフライン時は未送信キューに積んでおき、オンライン復帰時にまとめて送信する
       enqueuePendingAction({

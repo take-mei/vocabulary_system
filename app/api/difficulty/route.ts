@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { getDifficultyFromGemini } from '@/lib/gemini';
 import { WordSetType } from '@/lib/types';
+import { currentUserId, isUuid, notFound, unauthorized } from '@/lib/userData';
 
 // 注意: 以前はset_idを渡すとサーバー側で全単語をループ判定していたが、
 // 単語数が多いとVercelのサーバーレス関数タイムアウト(約10〜60秒)を超えて
@@ -9,23 +10,27 @@ import { WordSetType } from '@/lib/types';
 // そのため一括判定は廃止し、呼び出し側(管理画面)が単語ごとに
 // このAPIを繰り返し呼び出す方式に変更した。
 export async function POST(req: NextRequest) {
+  const userId = await currentUserId(req);
+  if (!userId) return unauthorized();
+
   const body = await req.json().catch(() => ({}));
   const { word_id } = body as { word_id?: string };
 
   if (!word_id) {
     return NextResponse.json({ error: 'word_id が必要です' }, { status: 400 });
   }
+  if (!isUuid(word_id)) return notFound('単語が見つかりません');
 
   try {
     const { data: word, error } = await supabaseAdmin
       .from('words')
       .select('*, word_sets(type)')
       .eq('id', word_id)
-      .single();
+      .eq('user_id', userId)
+      .maybeSingle();
 
-    if (error || !word) {
-      throw new Error(error?.message ?? '単語が見つかりません');
-    }
+    if (error) throw new Error(error.message);
+    if (!word) return notFound('単語が見つかりません');
 
     const type = (word as any).word_sets?.type as WordSetType;
     const difficulty = await getDifficultyFromGemini({
@@ -38,6 +43,7 @@ export async function POST(req: NextRequest) {
       .from('words')
       .update({ difficulty })
       .eq('id', word_id)
+      .eq('user_id', userId)
       .select()
       .single();
 

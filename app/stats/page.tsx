@@ -13,7 +13,6 @@ import {
   Bar,
   Legend,
 } from 'recharts';
-import { supabase } from '@/lib/supabaseClient';
 import { MODE_LABELS, QuizMode, StudyLog, WordSet } from '@/lib/types';
 import NavHeader from '@/components/NavHeader';
 
@@ -24,15 +23,16 @@ export default function StatsPage() {
 
   useEffect(() => {
     (async () => {
-      const [{ data: logData }, { data: setData }] = await Promise.all([
-        supabase
-          .from('study_logs')
-          .select('*')
-          .order('answered_at', { ascending: true }),
-        supabase.from('word_sets').select('*'),
-      ]);
-      if (logData) setLogs(logData as StudyLog[]);
-      if (setData) setSets(setData as WordSet[]);
+      try {
+        const res = await fetch('/api/stats');
+        if (res.ok) {
+          const json = await res.json();
+          setLogs(json.logs as StudyLog[]);
+          setSets(json.sets as WordSet[]);
+        }
+      } catch {
+        // 通信できない時は空のまま表示する
+      }
       setLoading(false);
     })();
   }, []);

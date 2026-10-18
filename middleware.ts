@@ -48,25 +48,14 @@ async function checkUser(userId: string): Promise<UserCheck> {
 // ログインページ・認証API・Service Workerは未ログインでもアクセスできる。
 const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/logout', '/sw.js'];
 
-// 管理者(role=admin)だけが使えるページ/API。管理者画面でしか使わない書き込み系・管理系のAPIを守る。
-// (/api/words/archive は出題画面からも使うので対象外)
-const ADMIN_API_PREFIXES = [
-  '/api/admin',
-  '/api/sets',
-  '/api/words',
-  '/api/import',
-  '/api/difficulty',
-  '/api/phonetic',
-];
-
+// 管理者(role=admin)だけが使えるページ/API。ユーザー管理(/admin, /api/admin)のみ。
+// 単語帳・単語・学習記録などのAPIは、ログインしていれば誰でも使える(ただし自分のデータだけ。各APIで絞り込む)。
 function matches(pathname: string, prefix: string) {
   return pathname === prefix || pathname.startsWith(prefix + '/');
 }
 
 function needsAdmin(pathname: string): boolean {
-  if (matches(pathname, '/admin')) return true;
-  if (pathname === '/api/words/archive') return false;
-  return ADMIN_API_PREFIXES.some((p) => matches(pathname, p));
+  return matches(pathname, '/admin') || matches(pathname, '/api/admin');
 }
 
 export async function middleware(req: NextRequest) {

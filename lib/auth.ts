@@ -1,4 +1,5 @@
 import { SignJWT, jwtVerify } from 'jose';
+import type { NextRequest } from 'next/server';
 
 // このファイルはmiddleware(Edge Runtime)からも使うため、Node専用モジュールをimportしないこと。
 // ロール(一般ユーザー/管理者)はセッションには入れず、毎回DB(app_users.role)で判定する。
@@ -38,4 +39,9 @@ export async function verifySessionToken(token: string | undefined): Promise<Ses
   } catch {
     return null;
   }
+}
+
+// APIルートから、ログイン中のユーザーを取り出す(未ログインならnull)
+export async function getSession(req: NextRequest): Promise<SessionInfo | null> {
+  return verifySessionToken(req.cookies.get(SESSION_COOKIE)?.value);
 }

@@ -1,27 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { getPhoneticFromDictionaryApi } from '@/lib/dictionary';
+import { currentUserId, isUuid, notFound, unauthorized } from '@/lib/userData';
 
 // Gemini難易度判定APIと同じ理由で、一括処理はサーバー側では行わず
 // 単語1件のみを処理する(呼び出し側が繰り返し呼び出してタイムアウトを回避する)。
 export async function POST(req: NextRequest) {
+  const userId = await currentUserId(req);
+  if (!userId) return unauthorized();
+
   const body = await req.json().catch(() => ({}));
   const { word_id } = body as { word_id?: string };
 
   if (!word_id) {
     return NextResponse.json({ error: 'word_id が必要です' }, { status: 400 });
   }
+  if (!isUuid(word_id)) return notFound('単語が見つかりません');
 
   try {
     const { data: word, error } = await supabaseAdmin
       .from('words')
       .select('*')
       .eq('id', word_id)
-      .single();
+      .eq('user_id', userId)
+      .maybeSingle();
 
-    if (error || !word) {
-      throw new Error(error?.message ?? '単語が見つかりません');
-    }
+    if (error) throw new Error(error.message);
+    if (!word) return notFound('単語が見つかりません');
 
     const phonetic = await getPhoneticFromDictionaryApi(word.word);
 
@@ -36,6 +41,7 @@ export async function POST(req: NextRequest) {
       .from('words')
       .update({ phonetic })
       .eq('id', word_id)
+      .eq('user_id', userId)
       .select()
       .single();
 

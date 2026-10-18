@@ -1,11 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { currentUserId, isUuid, notFound, ownsSet, unauthorized } from '@/lib/userData';
 
 export async function GET(req: NextRequest) {
+  const userId = await currentUserId(req);
+  if (!userId) return unauthorized();
+
   const setId = req.nextUrl.searchParams.get('set_id');
+  if (setId && !isUuid(setId)) {
+    return NextResponse.json({ error: 'set_id が不正です' }, { status: 400 });
+  }
+
   let query = supabaseAdmin
     .from('words')
     .select('*')
+    .eq('user_id', userId)
     .order('created_at', { ascending: false });
 
   if (setId) {
@@ -20,7 +29,10 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const body = await req.json();
+  const userId = await currentUserId(req);
+  if (!userId) return unauthorized();
+
+  const body = await req.json().catch(() => ({}));
   const { set_id, word, mean, remarks, importance, phonetic } = body;
 
   if (!set_id || !word || !mean) {
@@ -29,6 +41,7 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
+  if (!(await ownsSet(userId, set_id))) return notFound('単語帳が見つかりません');
 
   const importanceValue =
     typeof importance === 'number' && importance >= 1 && importance <= 5
@@ -38,6 +51,7 @@ export async function POST(req: NextRequest) {
   const { data, error } = await supabaseAdmin
     .from('words')
     .insert({
+      user_id: userId,
       set_id,
       word,
       mean,

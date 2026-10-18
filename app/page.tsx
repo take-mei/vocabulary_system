@@ -4,7 +4,6 @@ import Link from 'next/link';
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabaseClient';
 import { WordSet, MODES_BY_TYPE, MODE_LABELS } from '@/lib/types';
 import NavHeader from '@/components/NavHeader';
 import TranslateBox from '@/components/TranslateBox';
@@ -29,13 +28,15 @@ export default function HomePage() {
 
   useEffect(() => {
     (async () => {
-      const { data, error } = await supabase
-        .from('word_sets')
-        .select('*')
-        .order('created_at', { ascending: false });
-      if (!error && data) {
-        setSets(data as WordSet[]);
-        refreshDownloadStatus(data as WordSet[]);
+      try {
+        const res = await fetch('/api/sets');
+        if (res.ok) {
+          const json = await res.json();
+          setSets(json.data as WordSet[]);
+          refreshDownloadStatus(json.data as WordSet[]);
+        }
+      } catch {
+        // 通信できない時は空のまま(オフラインでは、ダウンロード済みの単語帳は各画面から開ける)
       }
       setLoading(false);
     })();
@@ -69,7 +70,7 @@ export default function HomePage() {
         <div className="rounded-xl border border-dashed border-gray-300 bg-white/60 p-6 text-center text-gray-500">
           まだ単語帳がありません。
           <br />
-          <span className="text-primary-600">管理者画面</span>
+          <Link href="/settings" className="text-primary-600 underline">設定</Link>
           から単語帳と単語を登録してください。
         </div>
       )}

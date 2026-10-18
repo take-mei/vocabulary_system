@@ -1,24 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { generateEnglishPassage } from '@/lib/gemini';
+import { currentUserId, isUuid, notFound, unauthorized } from '@/lib/userData';
 
 export async function POST(req: NextRequest) {
+  const userId = await currentUserId(req);
+  if (!userId) return unauthorized();
+
   const body = await req.json().catch(() => ({}));
   const { word_ids } = body as { word_ids?: string[] };
 
   if (!Array.isArray(word_ids) || word_ids.length === 0) {
     return NextResponse.json({ error: 'word_ids が必要です' }, { status: 400 });
   }
+  if (!word_ids.every(isUuid)) {
+    return NextResponse.json({ error: 'word_ids が不正です' }, { status: 400 });
+  }
 
   try {
     const { data: words, error } = await supabaseAdmin
       .from('words')
       .select('*, word_sets(type)')
-      .in('id', word_ids);
+      .in('id', word_ids)
+      .eq('user_id', userId);
 
-    if (error || !words || words.length === 0) {
-      throw new Error(error?.message ?? '単語が見つかりません');
-    }
+    if (error) throw new Error(error.message);
+    if (!words || words.length === 0) return notFound('単語が見つかりません');
 
     const nonEnglish = words.some((w: any) => w.word_sets?.type !== 'english');
     if (nonEnglish) {

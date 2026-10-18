@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
+import { prepareOfflineDataFor } from '@/lib/offlineStore';
 
 export default function LoginPage() {
   const [username, setUsername] = useState('');
@@ -24,6 +25,9 @@ export default function LoginPage() {
         setLoading(false);
         return;
       }
+      // 前回と別のユーザーなら、端末に残っている前のユーザーの単語データを消す
+      prepareOfflineDataFor(username.trim());
+
       // オープンリダイレクト対策: 同一サイト内の相対パスのみ許可
       const next = new URLSearchParams(window.location.search).get('next');
       const dest = next && next.startsWith('/') && !next.startsWith('//') ? next : '/';

@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { supabase } from '@/lib/supabaseClient';
 import { GeneratedPassage } from '@/lib/gemini';
 import { MODE_LABELS, MODES_BY_TYPE, QuizMode, Word, WordSet } from '@/lib/types';
 import NavHeader from '@/components/NavHeader';
@@ -33,19 +32,23 @@ export default function ArchiveTestPage() {
 
   useEffect(() => {
     (async () => {
-      const { data: setData } = await supabase.from('word_sets').select('*').eq('id', setId).single();
-      const { data: wordData } = await supabase
-        .from('words')
-        .select('*')
-        .eq('set_id', setId)
-        .eq('archived', true)
-        .order('word', { ascending: true });
+      let setData: WordSet | null = null;
+      let list: Word[] = [];
+      try {
+        const res = await fetch(`/api/study?set_id=${encodeURIComponent(setId)}&archived=true`);
+        if (res.ok) {
+          const json = await res.json();
+          setData = json.set as WordSet;
+          list = (json.words as Word[]) ?? [];
+        }
+      } catch {
+        // 通信できない時は空のまま表示する
+      }
 
       if (setData) {
-        setSet(setData as WordSet);
-        setMode(MODES_BY_TYPE[(setData as WordSet).type][0]);
+        setSet(setData);
+        setMode(MODES_BY_TYPE[setData.type][0]);
       }
-      const list = (wordData as Word[]) ?? [];
       setArchivedWords(list);
       setSelectedIds(new Set(list.map((w) => w.id)));
       setLoading(false);
@@ -114,7 +117,7 @@ export default function ArchiveTestPage() {
 
       {!loading && archivedWords.length === 0 && (
         <div className="rounded-xl border border-dashed border-gray-300 bg-white/60 p-6 text-center text-gray-500">
-          アーカイブ済みの単語がありません。管理者画面で単語をチェックしてアーカイブしてください。
+          アーカイブ済みの単語がありません。設定画面で単語をチェックしてアーカイブしてください。
         </div>
       )}
 

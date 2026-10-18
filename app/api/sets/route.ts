@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { currentUserId, unauthorized } from '@/lib/userData';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const userId = await currentUserId(req);
+  if (!userId) return unauthorized();
+
   const { data, error } = await supabaseAdmin
     .from('word_sets')
     .select('*')
+    .eq('user_id', userId)
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -14,7 +19,10 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const body = await req.json();
+  const userId = await currentUserId(req);
+  if (!userId) return unauthorized();
+
+  const body = await req.json().catch(() => ({}));
   const { name, type, description } = body;
 
   if (!name || !type || !['english', 'kobun'].includes(type)) {
@@ -26,7 +34,7 @@ export async function POST(req: NextRequest) {
 
   const { data, error } = await supabaseAdmin
     .from('word_sets')
-    .insert({ name, type, description: description ?? null })
+    .insert({ user_id: userId, name, type, description: description ?? null })
     .select()
     .single();
 

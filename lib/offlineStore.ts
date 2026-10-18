@@ -1,4 +1,3 @@
-import { supabase } from '@/lib/supabaseClient';
 import { QuizMode, Word, WordSetType } from '@/lib/types';
 
 // ブラウザのlocalStorageに単語帳データと「オンライン復帰時に送る操作」を貯めておくための
@@ -80,44 +79,25 @@ export function listDownloadedSetIds(): string[] {
   return ids;
 }
 
-// 単語帳全体(word_sets + 非アーカイブの単語 + 習熟度)をSupabaseから取得し、
+// 単語帳全体(word_sets + 非アーカイブの単語 + 習熟度)をサーバー(APIの/api/study)から取得し、
 // localStorageに保存する。Wi-Fiがある時にこれを呼んでおくことで、後でオフライン利用できる。
 export async function downloadSetForOffline(
   setId: string
 ): Promise<{ ok: true; count: number } | { ok: false; error: string }> {
   try {
-    const { data: setData, error: setError } = await supabase
-      .from('word_sets')
-      .select('*')
-      .eq('id', setId)
-      .single();
-    if (setError || !setData) throw new Error(setError?.message ?? '単語帳が見つかりません');
-
-    const { data: wordData, error: wordError } = await supabase
-      .from('words')
-      .select('*')
-      .eq('set_id', setId)
-      .eq('archived', false);
-    if (wordError) throw new Error(wordError.message);
-
-    const words = (wordData as Word[]) ?? [];
-    const proficiency: Record<string, number> = {};
-    if (words.length > 0) {
-      const { data: profData } = await supabase
-        .from('word_proficiency')
-        .select('*')
-        .in('word_id', words.map((w) => w.id));
-      (profData as { word_id: string; level: number }[] | null)?.forEach((p) => {
-        proficiency[p.word_id] = p.level;
-      });
+    const res = await fetch(`/api/study?set_id=${encodeURIComponent(setId)}`);
+    if (!res.ok) {
+      throw new Error(res.status === 404 ? '単語帳が見つかりません' : 'ダウンロードに失敗しました');
     }
+    const json = await res.json();
+    const words = (json.words as Word[]) ?? [];
 
     saveOfflineSet({
       setId,
-      setName: setData.name,
-      setType: setData.type,
+      setName: json.set.name,
+      setType: json.set.type,
       words,
-      proficiency,
+      proficiency: (json.proficiency as Record<string, number>) ?? {},
       downloadedAt: new Date().toISOString(),
     });
 
@@ -165,7 +145,15 @@ export function getPendingCount(): number {
   return getQueue().length;
 }
 
-// オンライン復帰時に呼び出し、キューに溜まった操作を1件ずつSupabase/APIに送信する。
+function postJson(url: string, body: unknown): Promise<Response> {
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+// オンライン復帰時に呼び出し、キューに溜まった操作を1件ずつAPIに送信する。
 // 失敗したものはキューに残し、成功したものだけ取り除く。
 export async function flushPendingActions(): Promise<{ done: number; failed: number }> {
   if (!hasWindow() || !navigator.onLine) return { done: 0, failed: 0 };
@@ -179,22 +167,16 @@ export async function flushPendingActions(): Promise<{ done: number; failed: num
 
   for (const action of queue) {
     try {
+      let res: Response;
       if (action.type === 'study_log') {
-        const { error } = await supabase.from('study_logs').insert(action.payload);
-        if (error) throw error;
+        res = await postJson('/api/study', { log: action.payload });
       } else if (action.type === 'proficiency') {
-        const { error } = await supabase
-          .from('word_proficiency')
-          .upsert(action.payload, { onConflict: 'word_id' });
-        if (error) throw error;
-      } else if (action.type === 'archive') {
-        const res = await fetch('/api/words/archive', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(action.payload),
-        });
-        if (!res.ok) throw new Error('archive api failed');
+        res = await postJson('/api/study', { proficiency: action.payload });
+      } else {
+        res = await postJson('/api/words/archive', action.payload);
       }
+      // 404は「その単語がもう無い(削除された)」ので、再送しても無駄。キューから外す
+      if (!res.ok && res.status !== 404) throw new Error('send failed');
       done += 1;
     } catch {
       failed += 1;
@@ -204,4 +186,27 @@ export async function flushPendingActions(): Promise<{ done: number; failed: num
 
   setQueue(remaining);
   return { done, failed };
+}
+
+// --- ユーザーが切り替わった時に、前のユーザーのデータが残らないようにする ---
+
+const OWNER_KEY = 'wordapp:owner';
+
+// ブラウザに保存した単語帳データと未送信キューをすべて消す
+export function clearOfflineData() {
+  if (!hasWindow()) return;
+  const keys: string[] = [];
+  for (let i = 0; i < window.localStorage.length; i++) {
+    const key = window.localStorage.key(i);
+    if (key?.startsWith('wordapp:')) keys.push(key);
+  }
+  keys.forEach((k) => window.localStorage.removeItem(k));
+}
+
+// ログイン直後に呼ぶ。前回と別のユーザーなら、前のユーザーのデータを消す。
+export function prepareOfflineDataFor(username: string) {
+  if (!hasWindow()) return;
+  const owner = window.localStorage.getItem(OWNER_KEY);
+  if (owner !== username) clearOfflineData();
+  window.localStorage.setItem(OWNER_KEY, username);
 }

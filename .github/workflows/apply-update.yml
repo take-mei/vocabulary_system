@@ -3,6 +3,8 @@ name: Apply update
 # 手動実行専用: GitHubの Actions タブ → 「Apply update」 → Run workflow
 # リポジトリ直下の update.zip を展開して、中のファイルを元のフォルダ構成のまま一括で上書きし、
 # 1回のコミットにまとめます。成功すると update.zip は自動で削除されます。
+# 実行中に別のコミット(update.zipの再アップロードなど)が入って push が拒否された場合は、
+# 最新の状態を取り直して、自動で最大3回までやり直します。
 on:
   workflow_dispatch:
 
@@ -16,31 +18,43 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Apply update.zip
-        run: |
-          if [ ! -f update.zip ]; then
-            echo "update.zip がありません。何もしません。"
-            exit 0
-          fi
-          unzip -o update.zip -d .
-          # 以前の版で使っていて、今は不要なファイル(無ければ何もしない)
-          rm -f app/api/admin/login/route.ts
-          rm -f app/api/admin/logout/route.ts
-          rm -f app/api/admin/password/route.ts
-          rm -f app/admin/login/page.tsx
-          # 置き場所を間違えて残っていた不要ファイル
-          rm -f lib/login/page.tsx
-          rm -f lib/usercheck.ts
-          rm -f update.zip
-
-      - name: Commit and push
+      - name: Apply update.zip and push
         run: |
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "変更はありません。"
-            exit 0
-          fi
-          git commit -m "Apply update"
-          git push
+          branch="${GITHUB_REF_NAME}"
+
+          for attempt in 1 2 3; do
+            # 毎回、最新の状態から始める
+            git fetch origin "$branch"
+            git reset --hard "origin/$branch"
+
+            if [ ! -f update.zip ]; then
+              echo "update.zip がありません。何もしません。"
+              exit 0
+            fi
+
+            unzip -o -q update.zip -d .
+            # 置き場所を間違えて残っていた不要ファイル(無ければ何もしない)
+            rm -f lib/login/page.tsx
+            rm -f lib/usercheck.ts
+            rm -f update.zip
+
+            git add -A
+            if git diff --cached --quiet; then
+              echo "変更はありません。"
+              exit 0
+            fi
+            git commit -m "Apply update"
+
+            if git push origin "HEAD:$branch"; then
+              echo "反映しました。"
+              exit 0
+            fi
+
+            echo "push に失敗しました。最新の状態を取り直してやり直します ($attempt/3)"
+            sleep 5
+          done
+
+          echo "3回試しても push できませんでした。もう一度 Run workflow を押してください。"
+          exit 1

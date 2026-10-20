@@ -36,14 +36,18 @@ export default function NavHeader() {
         <Link href="/" className="text-lg font-bold text-primary-700">
           📚 単語帳アプリ
         </Link>
-        <nav className="flex items-center gap-3 text-sm text-primary-700">
+        <nav className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 text-sm text-primary-700">
           <Link href="/stats" className="hover:underline">統計</Link>
+          <Link href="/checked" className="hover:underline">★チェック</Link>
           <Link href="/settings" className="hover:underline">設定</Link>
           {me?.role === 'admin' && (
             <Link href="/admin" className="hover:underline">管理者</Link>
           )}
+          <Link href="/account" className="hover:underline">
+            👤{me ? me.username : 'アカウント'}
+          </Link>
           <button onClick={handleLogout} className="hover:underline">
-            ログアウト{me ? `(${me.username})` : ''}
+            ログアウト
           </button>
         </nav>
       </header>

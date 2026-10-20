@@ -37,6 +37,11 @@ type PendingAction =
       id: string;
       type: 'archive';
       payload: { ids: string[]; archived: boolean };
+    }
+  | {
+      id: string;
+      type: 'check';
+      payload: { ids: string[]; checked: boolean };
     };
 
 function hasWindow(): boolean {
@@ -115,6 +120,14 @@ export function removeWordFromOfflineCache(setId: string, wordId: string) {
   saveOfflineSet(data);
 }
 
+// チェック(☆)の切り替えをローカルキャッシュにも反映する
+export function updateOfflineChecked(setId: string, wordId: string, checked: boolean) {
+  const data = getOfflineSet(setId);
+  if (!data) return;
+  data.words = data.words.map((w) => (w.id === wordId ? { ...w, checked } : w));
+  saveOfflineSet(data);
+}
+
 // オフライン中に更新した習熟度をローカルキャッシュにも反映する
 export function updateOfflineProficiency(setId: string, wordId: string, level: number) {
   const data = getOfflineSet(setId);
@@ -172,8 +185,10 @@ export async function flushPendingActions(): Promise<{ done: number; failed: num
         res = await postJson('/api/study', { log: action.payload });
       } else if (action.type === 'proficiency') {
         res = await postJson('/api/study', { proficiency: action.payload });
-      } else {
+      } else if (action.type === 'archive') {
         res = await postJson('/api/words/archive', action.payload);
+      } else {
+        res = await postJson('/api/words/check', action.payload);
       }
       // 404は「その単語がもう無い(削除された)」ので、再送しても無駄。キューから外す
       if (!res.ok && res.status !== 404) throw new Error('send failed');

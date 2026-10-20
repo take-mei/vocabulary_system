@@ -150,7 +150,9 @@ export default function AdminUsers() {
   }
 
   return (
-    <section className="mt-8 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
+    <>
+    <AdminSignupSection />
+    <section className="mt-6 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
       <h2 className="mb-1 font-bold">ログインアカウント管理</h2>
       <p className="mb-3 text-xs text-gray-500">
         一般ユーザーはアプリを使えます。管理者はそれに加えて、この管理者画面に入れます。
@@ -277,6 +279,97 @@ export default function AdminUsers() {
           )}
         </ul>
       )}
+    </section>
+    </>
+  );
+}
+
+function AdminSignupSection() {
+  const [enabled, setEnabled] = useState(false);
+  const [code, setCode] = useState('');
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/api/admin/signup')
+      .then((res) => res.json().then((json) => ({ res, json })))
+      .then(({ res, json }) => {
+        if (res.ok) {
+          setEnabled(!!json.data.enabled);
+          setCode(json.data.code ?? '');
+        } else {
+          setError(json.error ?? '設定を読み込めませんでした');
+        }
+        setLoaded(true);
+      })
+      .catch(() => {
+        setError('通信に失敗しました');
+        setLoaded(true);
+      });
+  }, []);
+
+  async function handleSave(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const res = await fetch('/api/admin/signup', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, code }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) setError(json.error ?? '設定を保存できませんでした');
+      else setMessage(enabled ? '新規登録の受付を「開始」で保存しました' : '新規登録の受付を「停止」で保存しました');
+    } catch {
+      setError('通信に失敗しました');
+    }
+    setBusy(false);
+  }
+
+  return (
+    <section className="mt-8 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
+      <h2 className="mb-1 font-bold">新規登録の受付</h2>
+      <p className="mb-3 text-xs text-gray-500">
+        受付を開始すると、ログイン画面に「新規登録」が出て、誰でも自分でアカウント(一般ユーザー)を作れます。
+        誰でも登録できる状態にしないために、<b>登録コード</b>を設定しておくことをおすすめします。
+        初期状態は「停止」です。
+      </p>
+      {!loaded ? (
+        <p className="text-sm text-gray-400">読み込み中...</p>
+      ) : (
+        <form onSubmit={handleSave} className="space-y-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+            新規登録を受け付ける
+          </label>
+          <div>
+            <label htmlFor="signup-code" className="mb-1 block text-xs text-gray-500">
+              登録コード(空欄ならコードなしで登録できます)
+            </label>
+            <input
+              id="signup-code"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              maxLength={100}
+              autoComplete="off"
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={busy}
+            className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+          >
+            {busy ? '保存中...' : '保存'}
+          </button>
+        </form>
+      )}
+      {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+      {message && <p className="mt-2 text-sm text-green-700">{message}</p>}
     </section>
   );
 }

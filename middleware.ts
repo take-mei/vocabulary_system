@@ -46,7 +46,16 @@ async function checkUser(userId: string): Promise<UserCheck> {
 }
 
 // ログインページ・認証API・Service Workerは未ログインでもアクセスできる。
-const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/logout', '/sw.js'];
+const PUBLIC_PATHS = [
+  '/login',
+  '/api/auth/login',
+  '/api/auth/logout',
+  '/api/auth/register', // 新規登録(受付中のときだけ成功する)
+  '/api/auth/signup-status',
+  '/api/passkey/login/options', // パスキーでログイン(ログイン前に使う)
+  '/api/passkey/login/verify',
+  '/sw.js',
+];
 
 // 管理者(role=admin)だけが使えるページ/API。ユーザー管理(/admin, /api/admin)のみ。
 // 単語帳・単語・学習記録などのAPIは、ログインしていれば誰でも使える(ただし自分のデータだけ。各APIで絞り込む)。

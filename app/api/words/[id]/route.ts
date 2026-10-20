@@ -8,7 +8,7 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
   if (!isUuid(params.id)) return notFound('単語が見つかりません');
 
   const body = await req.json().catch(() => ({}));
-  const { word, mean, remarks, importance, phonetic, archived } = body;
+  const { word, mean, remarks, importance, phonetic, archived, checked } = body;
 
   const updatePayload: Record<string, unknown> = { word, mean, remarks };
   if (typeof importance === 'number' && importance >= 1 && importance <= 5) {
@@ -19,6 +19,9 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
   }
   if (typeof archived === 'boolean') {
     updatePayload.archived = archived;
+  }
+  if (typeof checked === 'boolean') {
+    updatePayload.checked = checked;
   }
 
   const { data, error } = await supabaseAdmin

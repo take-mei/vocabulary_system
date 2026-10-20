@@ -21,6 +21,11 @@ export async function GET(req: NextRequest) {
     query = query.eq('set_id', setId);
   }
 
+  // ?checked=true なら、チェック(☆)した単語だけ
+  if (req.nextUrl.searchParams.get('checked') === 'true') {
+    query = query.eq('checked', true);
+  }
+
   const { data, error } = await query;
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

@@ -1,5 +1,5 @@
 import { SignJWT, jwtVerify } from 'jose';
-import type { NextRequest } from 'next/server';
+import type { NextRequest, NextResponse } from 'next/server';
 
 // このファイルはmiddleware(Edge Runtime)からも使うため、Node専用モジュールをimportしないこと。
 // ロール(一般ユーザー/管理者)はセッションには入れず、毎回DB(app_users.role)で判定する。
@@ -44,4 +44,64 @@ export async function verifySessionToken(token: string | undefined): Promise<Ses
 // APIルートから、ログイン中のユーザーを取り出す(未ログインならnull)
 export async function getSession(req: NextRequest): Promise<SessionInfo | null> {
   return verifySessionToken(req.cookies.get(SESSION_COOKIE)?.value);
+}
+
+// ログイン成功時に、セッションCookieをレスポンスにセットする(パスワード/パスキー/新規登録で共通)
+export function setSessionCookie(res: NextResponse, token: string) {
+  res.cookies.set(SESSION_COOKIE, token, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+    maxAge: SESSION_MAX_AGE,
+  });
+}
+
+// ---------------------------------------------------------------
+// パスキー(WebAuthn)用: 発行した「チャレンジ」を、短時間だけ署名付きCookieに預けておく。
+// サーバーは状態を持たないので、「options」と「verify」の2回のリクエストをこれでつなぐ。
+// ---------------------------------------------------------------
+export const CHALLENGE_COOKIE = 'word_chal';
+export const CHALLENGE_MAX_AGE = 60 * 5; // 5分
+
+export type ChallengePurpose = 'passkey-register' | 'passkey-login';
+
+export async function createChallengeToken(
+  challenge: string,
+  purpose: ChallengePurpose,
+  userId?: string
+): Promise<string> {
+  return new SignJWT({ challenge, purpose, uid: userId ?? null })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime(`${CHALLENGE_MAX_AGE}s`)
+    .sign(getKey());
+}
+
+export async function verifyChallengeToken(
+  token: string | undefined,
+  purpose: ChallengePurpose
+): Promise<{ challenge: string; userId: string | null } | null> {
+  if (!token) return null;
+  try {
+    const { payload } = await jwtVerify(token, getKey(), { algorithms: ['HS256'] });
+    if (payload.purpose !== purpose || typeof payload.challenge !== 'string') return null;
+    return { challenge: payload.challenge, userId: typeof payload.uid === 'string' ? payload.uid : null };
+  } catch {
+    return null;
+  }
+}
+
+export function setChallengeCookie(res: NextResponse, token: string) {
+  res.cookies.set(CHALLENGE_COOKIE, token, {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/api/passkey',
+    maxAge: CHALLENGE_MAX_AGE,
+  });
+}
+
+export function clearChallengeCookie(res: NextResponse) {
+  res.cookies.set(CHALLENGE_COOKIE, '', { path: '/api/passkey', maxAge: 0 });
 }

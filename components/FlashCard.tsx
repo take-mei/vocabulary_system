@@ -12,6 +12,8 @@ export default function FlashCard({
   flipped,
   onFlip,
   onSpeak,
+  checked,
+  onToggleCheck,
 }: {
   word: Word;
   frontText: string;
@@ -22,11 +24,20 @@ export default function FlashCard({
   flipped: boolean;
   onFlip: () => void;
   onSpeak: () => void;
+  checked?: boolean;
+  onToggleCheck?: () => void;
 }) {
   function handleSpeakClick(e: React.MouseEvent) {
     e.stopPropagation(); // カードのフリップを誘発しないようにする
     onSpeak();
   }
+
+  function handleCheckClick(e: React.MouseEvent) {
+    e.stopPropagation(); // カードのフリップを誘発しないようにする
+    onToggleCheck?.();
+  }
+
+  const checkLabel = checked ? 'チェックを外す' : 'チェックする(あとで見返す)';
 
   return (
     <div className="card-flip-container mx-auto h-64 w-full max-w-sm">
@@ -42,6 +53,18 @@ export default function FlashCard({
           >
             🔊
           </button>
+          {onToggleCheck && (
+            <button
+              onClick={handleCheckClick}
+              className={`absolute left-3 top-3 rounded-full bg-gray-100 p-2 text-lg leading-none hover:bg-gray-200 active:scale-95 ${
+                checked ? 'text-amber-500' : 'text-gray-400'
+              }`}
+              aria-label={checkLabel}
+              title={checkLabel}
+            >
+              {checked ? '★' : '☆'}
+            </button>
+          )}
           <p className="text-2xl font-bold leading-snug">{frontText}</p>
           {frontPhonetic && (
             <p className="mt-1 text-sm text-gray-400">[{frontPhonetic}]</p>
@@ -56,6 +79,18 @@ export default function FlashCard({
           >
             🔊
           </button>
+          {onToggleCheck && (
+            <button
+              onClick={handleCheckClick}
+              className={`absolute left-3 top-3 rounded-full bg-white/20 p-2 text-lg leading-none hover:bg-white/30 active:scale-95 ${
+                checked ? 'text-amber-300' : 'text-white'
+              }`}
+              aria-label={checkLabel}
+              title={checkLabel}
+            >
+              {checked ? '★' : '☆'}
+            </button>
+          )}
           <p className="text-2xl font-bold leading-snug">{backText}</p>
           {backPhonetic && (
             <p className="mt-1 text-sm text-primary-100">[{backPhonetic}]</p>

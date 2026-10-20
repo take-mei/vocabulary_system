@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   PROFICIENCY_LABELS,
@@ -18,24 +18,35 @@ import {
   getOfflineSet,
   removeWordFromOfflineCache,
   saveOfflineSet,
+  updateOfflineChecked,
   updateOfflineProficiency,
 } from '@/lib/offlineStore';
 
 const FRONT_IS_WORD: QuizMode[] = ['en_to_jp', 'ko_to_gen'];
 
+// 習熟度(自己評価1〜5)ごとの出やすさ。数字が小さい(苦手)ほど、掛け算で大きく効く。
+//   1(全然だめ)=8倍 / 2=4倍 / 3=2倍 / 4=1倍 / 5(バッチリ)=0.4倍
+// => 1と5では20倍の差。バッチリの単語はほとんど出ず、苦手な単語が何度も出る。
+const LEVEL_FACTOR: Record<number, number> = { 1: 8, 2: 4, 3: 2, 4: 1, 5: 0.4 };
+
 // 重要度・難易度・習熟度から出題の重みを計算する。
-// - importance(重要度 1〜5): 数値が上がるほど「掛け算」で効くようにし、
-//   1→1.0倍 / 2→1.5倍 / 3→2.0倍 / 4→2.5倍 / 5→3.0倍 と、重要度が高い単語ほど
-//   出現頻度が加速度的に増えるようにしている。
-// - difficulty(難易度 1〜5、未判定は3扱い): 高いほど出やすい
-// - proficiencyLevel(習熟度 1〜5、未評価は1=最も苦手扱い): 低いほど出やすい(x2で重視)
+// - proficiencyLevel(習熟度 1〜5、未評価は1=最も苦手扱い): 上の表のとおり、最も強く効く
+// - importance(重要度 1〜5): 1→1.0倍 / 2→1.5倍 / 3→2.0倍 / 4→2.5倍 / 5→3.0倍
+// - difficulty(難易度 1〜5、未判定は3扱い): 1→0.85倍 〜 5→1.45倍(補助的に効く)
 function calcWeight(word: Word, proficiencyLevel: number): number {
-  const difficulty = word.difficulty ?? 3;
-  const proficiencyFactor = (6 - proficiencyLevel) * 2;
-  const importanceMultiplier = 0.5 + word.importance * 0.5; // 1→1.0 ... 5→3.0
-  const weight = (difficulty + proficiencyFactor) * importanceMultiplier;
-  return Math.max(weight, 1);
+  const levelFactor = LEVEL_FACTOR[proficiencyLevel] ?? LEVEL_FACTOR[1];
+  const difficultyFactor = 0.7 + (word.difficulty ?? 3) * 0.15;
+  const importanceMultiplier = 0.5 + word.importance * 0.5;
+  return levelFactor * difficultyFactor * importanceMultiplier;
 }
+
+// 自己評価が低かった単語を、同じ学習中にもう一度出すための設定。
+//   gap: 何問あとに出すか(最小〜最大) / max: 1回の学習で、最大何回まで出し直すか
+const REQUEUE_PLAN: Record<number, { gapMin: number; gapMax: number; max: number }> = {
+  1: { gapMin: 3, gapMax: 5, max: 3 },
+  2: { gapMin: 6, gapMax: 9, max: 2 },
+  3: { gapMin: 12, gapMax: 18, max: 1 },
+};
 
 function pickWeightedIndex(weights: number[], total: number): number {
   let r = Math.random() * total;
@@ -84,6 +95,8 @@ export default function QuizPage() {
   });
   const [finished, setFinished] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  // 学習中に、単語ごとに何回出し直したか(出し直しすぎないための上限管理)
+  const requeueCountRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
     (async () => {
@@ -231,11 +244,53 @@ export default function QuizPage() {
       return next;
     });
 
-    if (pos + 1 >= queue.length) {
+    // 自己評価が低い単語は、この学習中にもう一度出す(低いほど早く・多く)
+    let nextQueue = queue;
+    const plan = REQUEUE_PLAN[level];
+    if (plan) {
+      const done = requeueCountRef.current.get(current.id) ?? 0;
+      if (done < plan.max) {
+        const gap = plan.gapMin + Math.floor(Math.random() * (plan.gapMax - plan.gapMin + 1));
+        const insertAt = Math.min(pos + 1 + gap, queue.length);
+        nextQueue = [...queue.slice(0, insertAt), current.id, ...queue.slice(insertAt)];
+        requeueCountRef.current.set(current.id, done + 1);
+        setQueue(nextQueue);
+      }
+    }
+
+    if (pos + 1 >= nextQueue.length) {
       setFinished(true);
     } else {
       setPos((p) => p + 1);
       setFlipped(false);
+    }
+  }
+
+  // ☆/★: この単語を「チェックした単語」に入れる/外す
+  async function toggleCheck() {
+    if (!current) return;
+    const wordId = current.id;
+    const next = !current.checked;
+    const payload = { ids: [wordId], checked: next };
+
+    setWords((ws) => ws.map((w) => (w.id === wordId ? { ...w, checked: next } : w)));
+    updateOfflineChecked(setId, wordId, next);
+
+    const online = typeof navigator !== 'undefined' && navigator.onLine;
+    if (!online) {
+      enqueuePendingAction({ type: 'check', payload });
+      return;
+    }
+    try {
+      const res = await fetch('/api/words/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      // 保存に失敗した場合は、後で再送できるようキューに積む(404=単語が無いので除く)
+      if (!res.ok && res.status !== 404) enqueuePendingAction({ type: 'check', payload });
+    } catch {
+      enqueuePendingAction({ type: 'check', payload });
     }
   }
 
@@ -278,6 +333,7 @@ export default function QuizPage() {
   }
 
   function restart() {
+    requeueCountRef.current = new Map();
     const weights = words.map((w) => calcWeight(w, proficiencyMap.get(w.id) ?? 1));
     setQueue(words.length ? buildWeightedQueue(words, weights, words.length) : []);
     setPos(0);
@@ -350,6 +406,8 @@ export default function QuizPage() {
             flipped={flipped}
             onFlip={() => setFlipped((f) => !f)}
             onSpeak={speakCurrent}
+            checked={!!current.checked}
+            onToggleCheck={toggleCheck}
           />
 
           <div className="mt-3 text-center">
@@ -365,7 +423,7 @@ export default function QuizPage() {
           {flipped ? (
             <div className="mt-4">
               <p className="mb-2 text-center text-xs text-gray-400">
-                習熟度を5段階で自己評価してください
+                習熟度を5段階で自己評価してください(低いほど、この後もう一度出ます)
               </p>
               <div className="grid grid-cols-5 gap-1.5">
                 {PROFICIENCY_LEVELS.map((level) => (

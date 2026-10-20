@@ -21,6 +21,11 @@ function getSupabaseAdmin(): SupabaseClient {
 
     cachedClient = createClient(supabaseUrl, serviceRoleKey, {
       auth: { persistSession: false },
+      global: {
+        // Next.js はサーバー側のfetchの結果を既定でキャッシュする。
+        // ユーザーの追加・設定の変更が、古い内容のまま返らないよう、DBへの問い合わせは必ずキャッシュしない。
+        fetch: (input, init) => fetch(input, { ...init, cache: 'no-store' }),
+      },
     });
   }
   return cachedClient;

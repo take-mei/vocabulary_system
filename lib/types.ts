@@ -18,6 +18,7 @@ export interface Word {
   importance: number; // 1〜5。管理者が設定する重要度。デフォルト3
   phonetic: string | null; // 発音記号(英単語のみ)。未取得はnull
   archived: boolean; // trueの場合、出題対象から除外される
+  checked: boolean; // trueの場合「チェックした単語」に入る(出題画面の☆で切り替え)
   created_at: string;
 }
 

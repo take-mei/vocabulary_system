@@ -6,6 +6,7 @@ import { GeneratedPassage } from '@/lib/gemini';
 import { MODE_LABELS, MODES_BY_TYPE, QuizMode, Word, WordSet } from '@/lib/types';
 import NavHeader from '@/components/NavHeader';
 import PdfExportButton from '@/components/PdfExportButton';
+import WordList from '@/components/WordList';
 import GeminiQuotaBadge from '@/components/GeminiQuotaBadge';
 import { getGeminiRemainingToday, recordGeminiUsage } from '@/lib/geminiQuota';
 
@@ -60,6 +61,25 @@ export default function ArchiveTestPage() {
     [archivedWords, selectedIds]
   );
 
+  // 一覧での操作(編集・チェック・アーカイブの取り消し・削除)の反映。
+  // アーカイブを取り消した単語は、アーカイブ済みの一覧(=この画面)から外す
+  function handleWordChange(updated: Word) {
+    if (!updated.archived) {
+      handleWordRemove(updated.id);
+      return;
+    }
+    setArchivedWords((ws) => ws.map((w) => (w.id === updated.id ? { ...w, ...updated } : w)));
+  }
+
+  function handleWordRemove(id: string) {
+    setArchivedWords((ws) => ws.filter((w) => w.id !== id));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }
+
   function toggleSelect(id: string) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -75,8 +95,9 @@ export default function ArchiveTestPage() {
     );
   }
 
-  async function generatePassage() {
-    if (selectedWords.length === 0) return;
+  async function generatePassage(onlyIds?: string[]) {
+    const targetWords = onlyIds ? archivedWords.filter((w) => onlyIds.includes(w.id)) : selectedWords;
+    if (targetWords.length === 0) return;
     if (getGeminiRemainingToday() <= 0) {
       setPassageError('本日のGemini利用上限に達しています。日を改めて実行してください。');
       return;
@@ -88,7 +109,7 @@ export default function ArchiveTestPage() {
       const res = await fetch('/api/generate-passage', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ word_ids: selectedWords.map((w) => w.id) }),
+        body: JSON.stringify({ word_ids: targetWords.map((w) => w.id) }),
       });
       const json = await res.json();
       if (!res.ok) {
@@ -117,13 +138,13 @@ export default function ArchiveTestPage() {
 
       {!loading && archivedWords.length === 0 && (
         <div className="rounded-xl border border-dashed border-gray-300 bg-white/60 p-6 text-center text-gray-500">
-          アーカイブ済みの単語がありません。設定画面で単語をチェックしてアーカイブしてください。
+          アーカイブ済みの単語がありません。設定画面で単語をアーカイブしてください。
         </div>
       )}
 
       {!loading && archivedWords.length > 0 && (
         <>
-          {/* 単語選択 */}
+          {/* 単語選択(各単語は、編集・削除・チェック・アーカイブの取り消しもできる) */}
           <section className="mb-6 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="font-bold">出題する単語を選択(アーカイブ済み {archivedWords.length}件)</h2>
@@ -131,13 +152,15 @@ export default function ArchiveTestPage() {
                 {selectedIds.size === archivedWords.length ? '全て解除' : '全て選択'}
               </button>
             </div>
-            <div className="grid max-h-56 grid-cols-2 gap-x-4 gap-y-1 overflow-y-auto text-sm sm:grid-cols-3">
-              {archivedWords.map((w) => (
-                <label key={w.id} className="flex items-center gap-1.5">
-                  <input type="checkbox" checked={selectedIds.has(w.id)} onChange={() => toggleSelect(w.id)} />
-                  <span className="truncate">{w.word}</span>
-                </label>
-              ))}
+            <div className="max-h-[28rem] overflow-y-auto rounded-xl ring-1 ring-gray-100">
+              <WordList
+                words={archivedWords}
+                view="list"
+                typeOf={() => set?.type}
+                selection={{ selectedIds, onToggle: toggleSelect }}
+                onChange={handleWordChange}
+                onRemove={handleWordRemove}
+              />
             </div>
             <p className="mt-2 text-xs text-gray-400">選択中: {selectedWords.length}件</p>
           </section>
@@ -212,7 +235,7 @@ export default function ArchiveTestPage() {
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button
-                    onClick={generatePassage}
+                    onClick={() => generatePassage()}
                     disabled={generatingPassage || selectedWords.length === 0}
                     className="rounded-lg bg-primary-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
                   >
@@ -237,9 +260,40 @@ export default function ArchiveTestPage() {
                 </div>
               </div>
 
+              <p className="mb-2 text-xs text-gray-400">
+                選択した単語を全部使うとは限りません。自然な文章になる範囲で、使えるだけ使って作成します。
+              </p>
               {passageError && <p className="mb-2 text-sm text-red-500">{passageError}</p>}
               {generatingPassage && (
                 <p className="text-sm text-gray-400">生成中です。数十秒かかることがあります...</p>
+              )}
+
+              {passage && passage.selected_count !== undefined && (
+                <div className="mb-3 rounded-xl bg-gray-50 p-3 text-sm">
+                  <p>
+                    選択した{passage.selected_count}語のうち、
+                    <b className="text-primary-700">{passage.used_count}語</b>を使って作成しました
+                    <span className="text-xs text-gray-400">(本文から調べた目安です)</span>
+                  </p>
+                  {passage.unused_word_ids && passage.unused_word_ids.length > 0 && (
+                    <>
+                      <p className="mt-1 text-xs text-gray-500">
+                        使われなかった単語:{' '}
+                        {archivedWords
+                          .filter((w) => passage.unused_word_ids?.includes(w.id))
+                          .map((w) => w.word)
+                          .join(', ')}
+                      </p>
+                      <button
+                        onClick={() => generatePassage(passage.unused_word_ids)}
+                        disabled={generatingPassage}
+                        className="mt-2 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-primary-700 ring-1 ring-primary-600 disabled:opacity-50"
+                      >
+                        使われなかった{passage.unused_word_ids.length}語だけで、もう1題作成
+                      </button>
+                    </>
+                  )}
+                </div>
               )}
 
               {passage && (

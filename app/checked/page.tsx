@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import NavHeader from '@/components/NavHeader';
+import WordList, { WordView } from '@/components/WordList';
 import { Word, WordSet } from '@/lib/types';
 
-type View = 'card' | 'list';
-const VIEW_KEY = 'wordapp:checked-view';
+const VIEW_KEY = 'wordapp:list-view'; // 設定画面の単語一覧と、表示形式の好みを共有する
 
 export default function CheckedPage() {
   const [words, setWords] = useState<Word[]>([]);
@@ -13,9 +13,8 @@ export default function CheckedPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [view, setView] = useState<View>('card');
+  const [view, setView] = useState<WordView>('card');
   const [setFilter, setSetFilter] = useState<string>('all');
-  const [revealed, setRevealed] = useState<Set<string>>(new Set()); // 答えを表示中のカード
   const [showAll, setShowAll] = useState(false);
 
   // 前回選んだ表示形式を思い出す
@@ -28,7 +27,7 @@ export default function CheckedPage() {
     }
   }, []);
 
-  function changeView(next: View) {
+  function changeView(next: WordView) {
     setView(next);
     try {
       window.localStorage.setItem(VIEW_KEY, next);
@@ -83,7 +82,25 @@ export default function CheckedPage() {
     if (setFilter !== 'all' && !words.some((w) => w.set_id === setFilter)) setSetFilter('all');
   }, [words, setFilter]);
 
-  async function uncheck(ids: string[]) {
+  // 一覧での操作の反映。チェックを外した単語は、この画面の一覧から消す
+  function handleChange(updated: Word) {
+    setWords((ws) =>
+      updated.checked
+        ? ws.map((w) => (w.id === updated.id ? { ...w, ...updated } : w))
+        : ws.filter((w) => w.id !== updated.id)
+    );
+  }
+
+  function handleRemove(id: string) {
+    setWords((ws) => ws.filter((w) => w.id !== id));
+  }
+
+  async function uncheckAllShown() {
+    if (filtered.length === 0) return;
+    const target = setFilter === 'all' ? 'すべて' : `「${setById.get(setFilter)?.name ?? ''}」`;
+    if (!confirm(`${target}のチェックを全部外しますか？(${filtered.length}語。単語そのものは消えません)`)) return;
+
+    const ids = filtered.map((w) => w.id);
     const previous = words;
     setWords((ws) => ws.filter((w) => !ids.includes(w.id)));
     setError(null);
@@ -100,50 +117,12 @@ export default function CheckedPage() {
     }
   }
 
-  function uncheckAllShown() {
-    if (filtered.length === 0) return;
-    const target = setFilter === 'all' ? 'すべて' : `「${setById.get(setFilter)?.name ?? ''}」`;
-    if (!confirm(`${target}のチェックを全部外しますか？(${filtered.length}語。単語そのものは消えません)`)) return;
-    uncheck(filtered.map((w) => w.id));
-  }
-
-  function toggleReveal(id: string) {
-    setRevealed((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  function speak(word: Word) {
-    if (typeof window === 'undefined' || !window.speechSynthesis) return;
-    const utterance = new SpeechSynthesisUtterance(word.word);
-    utterance.lang = setById.get(word.set_id)?.type === 'kobun' ? 'ja-JP' : 'en-US';
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utterance);
-  }
-
-  function typeBadge(word: Word) {
-    const type = setById.get(word.set_id)?.type;
-    if (!type) return null;
-    return (
-      <span
-        className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-          type === 'english' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'
-        }`}
-      >
-        {type === 'english' ? '英単語' : '古文単語'}
-      </span>
-    );
-  }
-
   return (
     <main>
       <NavHeader />
       <h1 className="mb-1 text-xl font-bold">★ チェックした単語</h1>
       <p className="mb-4 text-sm text-gray-500">
-        出題画面のカード左上の ☆ を押した単語が、ここにたまります。
+        出題画面のカード左上の ☆ を押した単語が、ここにたまります。ここからも、編集・アーカイブ・削除ができます。
       </p>
 
       {loading && <p className="text-gray-400">読み込み中...</p>}
@@ -205,92 +184,16 @@ export default function CheckedPage() {
 
           <p className="mb-3 text-xs text-gray-400">{filtered.length}語</p>
 
-          {/* カード形式 */}
-          {view === 'card' && (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {filtered.map((w) => {
-                const open = showAll || revealed.has(w.id);
-                return (
-                  <div
-                    key={w.id}
-                    onClick={() => toggleReveal(w.id)}
-                    className="relative cursor-pointer rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5 transition hover:shadow-md"
-                  >
-                    <div className="mb-2 flex items-center justify-between">
-                      {typeBadge(w)}
-                      <div className="flex items-center gap-1">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            speak(w);
-                          }}
-                          className="rounded-full bg-gray-100 p-1.5 text-sm hover:bg-gray-200"
-                          aria-label="発音を再生"
-                        >
-                          🔊
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            uncheck([w.id]);
-                          }}
-                          className="rounded-full bg-gray-100 p-1.5 text-sm leading-none text-amber-500 hover:bg-gray-200"
-                          aria-label="チェックを外す"
-                          title="チェックを外す"
-                        >
-                          ★
-                        </button>
-                      </div>
-                    </div>
-                    <p className="text-xl font-bold leading-snug">{w.word}</p>
-                    {w.phonetic && <p className="text-sm text-gray-400">[{w.phonetic}]</p>}
-                    {open ? (
-                      <div className="mt-2 border-t border-gray-100 pt-2">
-                        <p className="font-semibold text-primary-700">{w.mean}</p>
-                        {w.remarks && <p className="mt-1 text-sm text-gray-500">{w.remarks}</p>}
-                      </div>
-                    ) : (
-                      <p className="mt-2 text-xs text-gray-300">タップして答えを見る</p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* リスト形式 */}
-          {view === 'list' && (
-            <ul className="divide-y divide-gray-100 rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-              {filtered.map((w) => (
-                <li key={w.id} className="flex items-start gap-3 p-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-bold">{w.word}</span>
-                      {w.phonetic && <span className="text-xs text-gray-400">[{w.phonetic}]</span>}
-                      {typeBadge(w)}
-                    </div>
-                    <p className="text-sm text-gray-700">{w.mean}</p>
-                    {w.remarks && <p className="text-xs text-gray-400">{w.remarks}</p>}
-                  </div>
-                  <button
-                    onClick={() => speak(w)}
-                    className="rounded-full bg-gray-100 p-1.5 text-sm hover:bg-gray-200"
-                    aria-label="発音を再生"
-                  >
-                    🔊
-                  </button>
-                  <button
-                    onClick={() => uncheck([w.id])}
-                    className="rounded-full bg-gray-100 p-1.5 text-sm leading-none text-amber-500 hover:bg-gray-200"
-                    aria-label="チェックを外す"
-                    title="チェックを外す"
-                  >
-                    ★
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+          <WordList
+            words={filtered}
+            view={view}
+            typeOf={(w) => setById.get(w.set_id)?.type}
+            showTypeBadge
+            hideMeaning
+            revealAll={showAll}
+            onChange={handleChange}
+            onRemove={handleRemove}
+          />
         </>
       )}
     </main>

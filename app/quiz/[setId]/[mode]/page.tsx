@@ -49,6 +49,11 @@ function calcWeight(word: Word, proficiencyLevel: number): number {
   return levelFactor * difficultyFactor * importanceMultiplier;
 }
 
+// 右へスワイプして、前の単語に戻る操作の判定
+const SWIPE_MIN_DISTANCE = 70; // これ以上(px)右へ動かしたらスワイプとみなす
+const SWIPE_MAX_MS = 1000; // これより長くかけた(ゆっくりした)動きは、スワイプとみなさない
+const SWIPE_MAX_DRAG = 110; // 指に合わせてカードを動かす最大量(px)
+
 function pickWeightedIndex(weights: number[], total: number): number {
   let r = Math.random() * total;
   for (let i = 0; i < weights.length; i++) {
@@ -93,6 +98,9 @@ export default function QuizPage() {
   const [archiving, setArchiving] = useState(false);
   // 学習記録の送信を、回答した順に1件ずつ行うための鎖(順番が入れ替わらないようにする)
   const sendChainRef = useRef<Promise<void>>(Promise.resolve());
+  // スワイプ操作: 指を置いた位置・時刻と、いまカードを動かしている量
+  const swipeRef = useRef<{ id: number; x: number; y: number; t: number } | null>(null);
+  const [dragX, setDragX] = useState(0);
 
   useEffect(() => {
     (async () => {
@@ -258,6 +266,40 @@ export default function QuizPage() {
     });
   }
 
+  // 右へスワイプして、前の単語に戻る(「← 前の単語に戻る」ボタンと同じ動き)。
+  // 縦スクロールやタップ(カードをめくる操作)を邪魔しないよう、横方向に十分動かした時だけ反応する。
+  // マウス操作は対象外(クリックでの操作を優先する)。
+  function isSwipeBack(dx: number, dy: number, ms: number) {
+    return dx >= SWIPE_MIN_DISTANCE && Math.abs(dx) > Math.abs(dy) * 1.5 && ms <= SWIPE_MAX_MS;
+  }
+
+  function onSwipeStart(e: React.PointerEvent) {
+    if (e.pointerType === 'mouse') return;
+    swipeRef.current = { id: e.pointerId, x: e.clientX, y: e.clientY, t: Date.now() };
+  }
+
+  function onSwipeMove(e: React.PointerEvent) {
+    const start = swipeRef.current;
+    if (!start || start.id !== e.pointerId) return;
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+    // 横に動かしている間だけ、指に合わせてカードを少し動かす
+    setDragX(canUndo(session) && dx > 10 && Math.abs(dx) > Math.abs(dy) * 1.5 ? Math.min(dx, SWIPE_MAX_DRAG) : 0);
+  }
+
+  function onSwipeEnd(e: React.PointerEvent) {
+    const start = swipeRef.current;
+    if (!start || start.id !== e.pointerId) return;
+    swipeRef.current = null;
+    setDragX(0);
+    if (isSwipeBack(e.clientX - start.x, e.clientY - start.y, Date.now() - start.t)) goBack();
+  }
+
+  function onSwipeCancel() {
+    swipeRef.current = null;
+    setDragX(0);
+  }
+
   // ☆/★: この単語を「チェックした単語」に入れる/外す
   async function toggleCheck() {
     if (!current) return;
@@ -360,6 +402,14 @@ export default function QuizPage() {
         </div>
       )}
 
+      {/* スワイプ領域(touch-action: pan-y で、縦のスクロールはそのまま使える) */}
+      <div
+        onPointerDown={onSwipeStart}
+        onPointerMove={onSwipeMove}
+        onPointerUp={onSwipeEnd}
+        onPointerCancel={onSwipeCancel}
+        style={{ touchAction: 'pan-y' }}
+      >
       {!loading && queue.length > 0 && !finished && current && (
         <>
           <div className="mb-4 h-2 w-full overflow-hidden rounded-full bg-gray-200">
@@ -389,6 +439,13 @@ export default function QuizPage() {
             残っていて一瞬見えてしまう」バグを防ぐ(常にflipped=falseの状態から
             表示が開始される)。
           */}
+          <div
+            style={{
+              transform: dragX ? `translateX(${dragX}px)` : undefined,
+              opacity: dragX ? 1 - dragX / 300 : 1,
+              transition: dragX ? 'none' : 'transform 0.2s, opacity 0.2s',
+            }}
+          >
           <FlashCard
             key={`${current.id}-${pos}`}
             word={current}
@@ -403,6 +460,7 @@ export default function QuizPage() {
             checked={!!current.checked}
             onToggleCheck={toggleCheck}
           />
+          </div>
 
           <div className="mt-3 text-center">
             <button
@@ -437,6 +495,9 @@ export default function QuizPage() {
           ) : (
             <p className="mt-4 text-center text-sm text-gray-400">
               カードをタップして答えを確認してください
+              {canUndo(session) && (
+                <span className="mt-1 block text-xs text-gray-300">右へスワイプで、前の単語に戻れます</span>
+              )}
             </p>
           )}
         </>
@@ -475,6 +536,7 @@ export default function QuizPage() {
           </div>
         </div>
       )}
+      </div>
     </main>
   );
 }

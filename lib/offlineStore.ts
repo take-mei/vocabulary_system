@@ -42,6 +42,12 @@ type PendingAction =
       id: string;
       type: 'check';
       payload: { ids: string[]; checked: boolean };
+    }
+  | {
+      // 「前の単語に戻る」による回答の取り消し(直近の学習記録を消し、習熟度を元に戻す)
+      id: string;
+      type: 'undo';
+      payload: { word_id: string; previous_level: number | null };
     };
 
 function hasWindow(): boolean {
@@ -129,10 +135,12 @@ export function updateOfflineChecked(setId: string, wordId: string, checked: boo
 }
 
 // オフライン中に更新した習熟度をローカルキャッシュにも反映する
-export function updateOfflineProficiency(setId: string, wordId: string, level: number) {
+// level が null のときは「未評価」に戻す(回答の取り消し用)
+export function updateOfflineProficiency(setId: string, wordId: string, level: number | null) {
   const data = getOfflineSet(setId);
   if (!data) return;
-  data.proficiency[wordId] = level;
+  if (level === null) delete data.proficiency[wordId];
+  else data.proficiency[wordId] = level;
   saveOfflineSet(data);
 }
 
@@ -185,6 +193,8 @@ export async function flushPendingActions(): Promise<{ done: number; failed: num
         res = await postJson('/api/study', { log: action.payload });
       } else if (action.type === 'proficiency') {
         res = await postJson('/api/study', { proficiency: action.payload });
+      } else if (action.type === 'undo') {
+        res = await postJson('/api/study', { undo: action.payload });
       } else if (action.type === 'archive') {
         res = await postJson('/api/words/archive', action.payload);
       } else {

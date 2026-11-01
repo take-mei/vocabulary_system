@@ -56,19 +56,23 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/study
-//   { log?: { word_id, mode, is_correct, level }, proficiency?: { word_id, level, updated_at? } }
+//   { log?: { word_id, mode, is_correct, level }, proficiency?: { word_id, level, updated_at? },
+//     undo?: { word_id, previous_level } }
+// undo は「前の単語に戻る」用: その単語の直近の学習記録を1件消し、習熟度を previous_level に戻す
+// (previous_level が null なら「未評価」に戻す=習熟度の記録を消す)。
 // 学習ログの記録と、単語ごとの習熟度の更新。対象の単語は必ず自分のものか確認する。
 export async function POST(req: NextRequest) {
   const userId = await currentUserId(req);
   if (!userId) return unauthorized();
 
   const body = await req.json().catch(() => ({}));
-  const { log, proficiency } = body as {
+  const { log, proficiency, undo } = body as {
     log?: { word_id?: unknown; mode?: unknown; is_correct?: unknown; level?: unknown };
     proficiency?: { word_id?: unknown; level?: unknown; updated_at?: unknown };
+    undo?: { word_id?: unknown; previous_level?: unknown };
   };
-  if (!log && !proficiency) {
-    return NextResponse.json({ error: 'log か proficiency が必要です' }, { status: 400 });
+  if (!log && !proficiency && !undo) {
+    return NextResponse.json({ error: 'log か proficiency か undo が必要です' }, { status: 400 });
   }
 
   const isLevel = (v: unknown): v is number =>
@@ -128,6 +132,52 @@ export async function POST(req: NextRequest) {
         { onConflict: 'word_id' }
       );
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  if (undo) {
+    const previousLevel = undo.previous_level;
+    if (previousLevel !== null && !isLevel(previousLevel)) {
+      return NextResponse.json({ error: 'undo の内容が不正です' }, { status: 400 });
+    }
+    const word = await findOwnWord(undo.word_id);
+    if (!word) return notFound('単語が見つかりません');
+
+    // その単語の直近の学習記録を1件消す
+    const { data: last, error: lastError } = await supabaseAdmin
+      .from('study_logs')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('word_id', word.id)
+      .order('answered_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (lastError) return NextResponse.json({ error: lastError.message }, { status: 500 });
+    if (last) {
+      const { error } = await supabaseAdmin
+        .from('study_logs')
+        .delete()
+        .eq('id', last.id)
+        .eq('user_id', userId);
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    // 習熟度を、回答する前の値に戻す
+    if (previousLevel === null) {
+      const { error } = await supabaseAdmin
+        .from('word_proficiency')
+        .delete()
+        .eq('word_id', word.id)
+        .eq('user_id', userId);
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    } else {
+      const { error } = await supabaseAdmin
+        .from('word_proficiency')
+        .upsert(
+          { user_id: userId, word_id: word.id, level: previousLevel, updated_at: new Date().toISOString() },
+          { onConflict: 'word_id' }
+        );
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    }
   }
 
   return NextResponse.json({ ok: true });

@@ -14,8 +14,17 @@ import {
 import NavHeader from '@/components/NavHeader';
 import FlashCard from '@/components/FlashCard';
 import {
+  answer as sessionAnswer,
+  archiveWord,
+  canUndo,
+  createSession,
+  SessionState,
+  undo as sessionUndo,
+} from '@/lib/quizSession';
+import {
   enqueuePendingAction,
   getOfflineSet,
+  getPendingCount,
   removeWordFromOfflineCache,
   saveOfflineSet,
   updateOfflineChecked,
@@ -39,14 +48,6 @@ function calcWeight(word: Word, proficiencyLevel: number): number {
   const importanceMultiplier = 0.5 + word.importance * 0.5;
   return levelFactor * difficultyFactor * importanceMultiplier;
 }
-
-// 自己評価が低かった単語を、同じ学習中にもう一度出すための設定。
-//   gap: 何問あとに出すか(最小〜最大) / max: 1回の学習で、最大何回まで出し直すか
-const REQUEUE_PLAN: Record<number, { gapMin: number; gapMax: number; max: number }> = {
-  1: { gapMin: 3, gapMax: 5, max: 3 },
-  2: { gapMin: 6, gapMax: 9, max: 2 },
-  3: { gapMin: 12, gapMax: 18, max: 1 },
-};
 
 function pickWeightedIndex(weights: number[], total: number): number {
   let r = Math.random() * total;
@@ -82,21 +83,16 @@ export default function QuizPage() {
 
   const [set, setSet] = useState<WordSet | null>(null);
   const [words, setWords] = useState<Word[]>([]);
-  const [proficiencyMap, setProficiencyMap] = useState<Map<string, number>>(new Map());
-  const [queue, setQueue] = useState<string[]>([]);
+  // 出題キュー・現在位置・回答の履歴・習熟度は、lib/quizSession.ts の状態としてまとめて持つ
+  const [session, setSession] = useState<SessionState>(() => createSession([], {}));
+  const { queue, pos, finished, results } = session;
   const [loading, setLoading] = useState(true);
   const [isOfflineMode, setIsOfflineMode] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [pos, setPos] = useState(0);
   const [flipped, setFlipped] = useState(false);
-  const [results, setResults] = useState<{ correct: number; wrong: number }>({
-    correct: 0,
-    wrong: 0,
-  });
-  const [finished, setFinished] = useState(false);
   const [archiving, setArchiving] = useState(false);
-  // 学習中に、単語ごとに何回出し直したか(出し直しすぎないための上限管理)
-  const requeueCountRef = useRef<Map<string, number>>(new Map());
+  // 学習記録の送信を、回答した順に1件ずつ行うための鎖(順番が入れ替わらないようにする)
+  const sendChainRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     (async () => {
@@ -113,24 +109,23 @@ export default function QuizPage() {
           setSet(setData);
           setWords(wordList);
 
-          const profMap = new Map<string, number>(
-            Object.entries((json.proficiency ?? {}) as Record<string, number>)
+          const levels = (json.proficiency ?? {}) as Record<string, number>;
+          const weights = wordList.map((w) => calcWeight(w, levels[w.id] ?? 1));
+          setSession(
+            createSession(
+              wordList.length ? buildWeightedQueue(wordList, weights, wordList.length) : [],
+              levels
+            )
           );
-          setProficiencyMap(profMap);
-
-          const weights = wordList.map((w) => calcWeight(w, profMap.get(w.id) ?? 1));
-          setQueue(wordList.length ? buildWeightedQueue(wordList, weights, wordList.length) : []);
           setIsOfflineMode(false);
 
           // 次回オフラインでも使えるよう、取得できたデータでローカルキャッシュも更新しておく
-          const proficiencyObj: Record<string, number> = {};
-          profMap.forEach((v, k) => (proficiencyObj[k] = v));
           saveOfflineSet({
             setId,
             setName: (setData as WordSet).name,
             setType: (setData as WordSet).type,
             words: wordList,
-            proficiency: proficiencyObj,
+            proficiency: levels,
             downloadedAt: new Date().toISOString(),
           });
 
@@ -152,10 +147,14 @@ export default function QuizPage() {
           created_at: offline.downloadedAt,
         });
         setWords(offline.words);
-        const profMap = new Map<string, number>(Object.entries(offline.proficiency));
-        setProficiencyMap(profMap);
-        const weights = offline.words.map((w) => calcWeight(w, profMap.get(w.id) ?? 1));
-        setQueue(offline.words.length ? buildWeightedQueue(offline.words, weights, offline.words.length) : []);
+        const levels = offline.proficiency;
+        const weights = offline.words.map((w) => calcWeight(w, levels[w.id] ?? 1));
+        setSession(
+          createSession(
+            offline.words.length ? buildWeightedQueue(offline.words, weights, offline.words.length) : [],
+            levels
+          )
+        );
         setIsOfflineMode(true);
       } else {
         setLoadError(
@@ -189,81 +188,74 @@ export default function QuizPage() {
     window.speechSynthesis.speak(utterance);
   }
 
-  async function recordAndNext(level: number) {
-    if (!current) return;
+  // 学習記録の送信。回答した順番が入れ替わらないよう1件ずつ送り、
+  // 送れなかった分(と、それ以降の分)はオフライン用の未送信キューに積む。
+  function sendStudy(body: object, queueForLater: () => void) {
+    sendChainRef.current = sendChainRef.current.then(async () => {
+      const canSend = typeof navigator !== 'undefined' && navigator.onLine && getPendingCount() === 0;
+      if (!canSend) {
+        queueForLater();
+        return;
+      }
+      try {
+        const res = await fetch('/api/study', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        // 通信はできたが保存に失敗した場合は、後で再送できるようキューに積む(404=単語が無いので除く)
+        if (!res.ok && res.status !== 404) queueForLater();
+      } catch {
+        queueForLater();
+      }
+    });
+  }
+
+  function recordAndNext(level: number) {
+    if (!current || finished) return;
+    const wordId = current.id;
+    const next = sessionAnswer(session, level);
     const isCorrect = level >= 4;
-    setResults((r) => ({
-      correct: r.correct + (isCorrect ? 1 : 0),
-      wrong: r.wrong + (isCorrect ? 0 : 1),
-    }));
+    const updatedAt = new Date().toISOString();
 
-    const online = typeof navigator !== 'undefined' && navigator.onLine;
+    setSession(next);
+    setFlipped(false);
+    updateOfflineProficiency(setId, wordId, level);
 
-    if (online) {
-      // 学習ログを記録し、単語ごとの現在の習熟度も更新する(失敗しても学習体験は止めない)
-      const updatedAt = new Date().toISOString();
-      const queueForLater = () => {
+    // 学習ログを記録し、単語ごとの現在の習熟度も更新する(失敗しても学習体験は止めない)
+    sendStudy(
+      {
+        log: { word_id: wordId, mode, is_correct: isCorrect, level },
+        proficiency: { word_id: wordId, level, updated_at: updatedAt },
+      },
+      () => {
         enqueuePendingAction({
           type: 'study_log',
-          payload: { word_id: current.id, set_id: setId, mode, is_correct: isCorrect, level },
+          payload: { word_id: wordId, set_id: setId, mode, is_correct: isCorrect, level },
         });
         enqueuePendingAction({
           type: 'proficiency',
-          payload: { word_id: current.id, level, updated_at: updatedAt },
+          payload: { word_id: wordId, level, updated_at: updatedAt },
         });
-      };
-      fetch('/api/study', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          log: { word_id: current.id, mode, is_correct: isCorrect, level },
-          proficiency: { word_id: current.id, level, updated_at: updatedAt },
-        }),
-      })
-        .then((res) => {
-          // 通信はできたが保存に失敗した場合は、後で再送できるようキューに積む(404=単語が無いので除く)
-          if (!res.ok && res.status !== 404) queueForLater();
-        })
-        .catch(queueForLater);
-    } else {
-      // オフライン時は未送信キューに積んでおき、オンライン復帰時にまとめて送信する
-      enqueuePendingAction({
-        type: 'study_log',
-        payload: { word_id: current.id, set_id: setId, mode, is_correct: isCorrect, level },
-      });
-      enqueuePendingAction({
-        type: 'proficiency',
-        payload: { word_id: current.id, level, updated_at: new Date().toISOString() },
-      });
-    }
-
-    updateOfflineProficiency(setId, current.id, level);
-    setProficiencyMap((m) => {
-      const next = new Map(m);
-      next.set(current.id, level);
-      return next;
-    });
-
-    // 自己評価が低い単語は、この学習中にもう一度出す(低いほど早く・多く)
-    let nextQueue = queue;
-    const plan = REQUEUE_PLAN[level];
-    if (plan) {
-      const done = requeueCountRef.current.get(current.id) ?? 0;
-      if (done < plan.max) {
-        const gap = plan.gapMin + Math.floor(Math.random() * (plan.gapMax - plan.gapMin + 1));
-        const insertAt = Math.min(pos + 1 + gap, queue.length);
-        nextQueue = [...queue.slice(0, insertAt), current.id, ...queue.slice(insertAt)];
-        requeueCountRef.current.set(current.id, done + 1);
-        setQueue(nextQueue);
       }
-    }
+    );
+  }
 
-    if (pos + 1 >= nextQueue.length) {
-      setFinished(true);
-    } else {
-      setPos((p) => p + 1);
-      setFlipped(false);
-    }
+  // 「前の単語に戻る」: 直前の回答を取り消して、その単語をもう一度出題する。
+  // (正答数・習熟度・学習記録を回答前に戻し、出し直しとして追加していた分も取り除く)
+  function goBack() {
+    const result = sessionUndo(session);
+    if (!result) return;
+    const { state, entry } = result;
+
+    setSession(state);
+    setFlipped(false);
+    updateOfflineProficiency(setId, entry.wordId, entry.prevLevel);
+
+    const undoPayload = { word_id: entry.wordId, previous_level: entry.prevLevel };
+    sendStudy({ undo: undoPayload }, () => {
+      enqueuePendingAction({ type: 'undo', payload: undoPayload });
+    });
   }
 
   // ☆/★: この単語を「チェックした単語」に入れる/外す
@@ -302,16 +294,9 @@ export default function QuizPage() {
     setArchiving(true);
 
     // このセッション中、この単語が今後(前方も含め)出題キューに出てこないようにする
-    const removedBeforePos = queue.slice(0, pos).filter((id) => id === wordId).length;
-    const newQueue = queue.filter((id) => id !== wordId);
-    const newWords = words.filter((w) => w.id !== wordId);
-    const newPos = Math.max(pos - removedBeforePos, 0);
-
-    setWords(newWords);
-    setQueue(newQueue);
-    setPos(newPos);
+    setWords((ws) => ws.filter((w) => w.id !== wordId));
+    setSession((st) => archiveWord(st, wordId));
     setFlipped(false);
-    if (newPos >= newQueue.length) setFinished(true);
 
     const online = typeof navigator !== 'undefined' && navigator.onLine;
     if (online) {
@@ -333,13 +318,11 @@ export default function QuizPage() {
   }
 
   function restart() {
-    requeueCountRef.current = new Map();
-    const weights = words.map((w) => calcWeight(w, proficiencyMap.get(w.id) ?? 1));
-    setQueue(words.length ? buildWeightedQueue(words, weights, words.length) : []);
-    setPos(0);
+    const weights = words.map((w) => calcWeight(w, session.levels[w.id] ?? 1));
+    setSession(
+      createSession(words.length ? buildWeightedQueue(words, weights, words.length) : [], session.levels)
+    );
     setFlipped(false);
-    setResults({ correct: 0, wrong: 0 });
-    setFinished(false);
   }
 
   return (
@@ -385,9 +368,20 @@ export default function QuizPage() {
               style={{ width: `${progressPct}%` }}
             />
           </div>
-          <p className="mb-3 text-center text-sm text-gray-500">
-            {pos + 1} / {queue.length}
-          </p>
+          <div className="mb-3 flex items-center justify-between text-sm text-gray-500">
+            <button
+              onClick={goBack}
+              disabled={!canUndo(session)}
+              title="直前の回答を取り消して、前の単語に戻ります"
+              className="rounded-lg px-2 py-1 text-xs font-semibold text-primary-700 hover:bg-primary-50 disabled:text-gray-300 disabled:hover:bg-transparent"
+            >
+              ← 前の単語に戻る
+            </button>
+            <span>
+              {pos + 1} / {queue.length}
+            </span>
+            <span className="w-28" />
+          </div>
 
           {/*
             key={current.id + pos} を付けてカードごとにDOMを作り直す。
@@ -459,7 +453,16 @@ export default function QuizPage() {
               : 0}
             %)
           </p>
-          <div className="flex justify-center gap-3">
+          <div className="flex flex-wrap justify-center gap-3">
+            {canUndo(session) && (
+              <button
+                onClick={goBack}
+                className="rounded-xl bg-white px-5 py-2 font-semibold text-primary-700 ring-1 ring-primary-600"
+                title="最後の回答を取り消して、最後の単語に戻ります"
+              >
+                ← 最後の単語に戻る
+              </button>
+            )}
             <button onClick={restart} className="rounded-xl bg-primary-600 px-5 py-2 font-semibold text-white">
               もう一度
             </button>

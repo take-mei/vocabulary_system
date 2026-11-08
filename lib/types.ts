@@ -61,3 +61,25 @@ export const PROFICIENCY_LABELS: Record<number, string> = {
 };
 
 export const PROFICIENCY_LEVELS = [1, 2, 3, 4, 5] as const;
+
+// --- 大学別の過去問(長文問題の参考資料) ---
+
+export interface University {
+  id: string;
+  name: string;
+  created_at: string;
+  exam_count?: number; // 一覧APIで付く、登録済みの過去問の件数
+}
+
+export interface PastExam {
+  id: string;
+  university_id: string;
+  title: string;
+  char_count: number;
+  created_at: string;
+  content?: string; // 一覧では含まれない(詳細取得時のみ)
+}
+
+// 過去問1件あたりの文字数の上限(件数の上限はない)。
+// Vercelのリクエスト本文の上限(約4.5MB)に収まるよう、日本語でも余裕のある値にしてある。
+export const MAX_EXAM_CHARS = 1_000_000;

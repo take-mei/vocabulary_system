@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { GeneratedPassage } from '@/lib/gemini';
-import { MODE_LABELS, MODES_BY_TYPE, QuizMode, Word, WordSet } from '@/lib/types';
+import { MODE_LABELS, MODES_BY_TYPE, QuizMode, University, Word, WordSet } from '@/lib/types';
 import NavHeader from '@/components/NavHeader';
 import PdfExportButton from '@/components/PdfExportButton';
 import WordList from '@/components/WordList';
@@ -11,6 +12,7 @@ import GeminiQuotaBadge from '@/components/GeminiQuotaBadge';
 import { getGeminiRemainingToday, recordGeminiUsage } from '@/lib/geminiQuota';
 
 const FRONT_IS_WORD: QuizMode[] = ['en_to_jp', 'ko_to_gen'];
+const UNIVERSITY_KEY = 'wordapp:passage-university';
 
 export default function ArchiveTestPage() {
   const params = useParams<{ setId: string }>();
@@ -30,6 +32,45 @@ export default function ArchiveTestPage() {
   const [generatingPassage, setGeneratingPassage] = useState(false);
   const [passageError, setPassageError] = useState<string | null>(null);
   const [showPassageAnswers, setShowPassageAnswers] = useState(false);
+
+  // 長文の参考にする大学(null = 指定なし)
+  const [universities, setUniversities] = useState<University[]>([]);
+  const [universityId, setUniversityId] = useState<string | null>(null);
+
+  // 大学の一覧(過去問の件数つき)を読み込み、前回選んだ大学があれば選び直す
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/universities');
+        if (!res.ok) return;
+        const json = await res.json();
+        const list = json.data as University[];
+        setUniversities(list);
+        try {
+          const saved = window.localStorage.getItem(UNIVERSITY_KEY);
+          if (saved && list.some((u) => u.id === saved && (u.exam_count ?? 0) > 0)) {
+            setUniversityId(saved);
+          }
+        } catch {
+          // localStorageが使えなくても動くようにする
+        }
+      } catch {
+        // 通信できない時は「指定なし」のまま使えるようにする
+      }
+    })();
+  }, []);
+
+  function chooseUniversity(id: string | null) {
+    setUniversityId(id);
+    try {
+      if (id) window.localStorage.setItem(UNIVERSITY_KEY, id);
+      else window.localStorage.removeItem(UNIVERSITY_KEY);
+    } catch {
+      // 保存できなくても選択は反映する
+    }
+  }
+
+  const selectedUniversity = universities.find((u) => u.id === universityId) ?? null;
 
   useEffect(() => {
     (async () => {
@@ -109,7 +150,10 @@ export default function ArchiveTestPage() {
       const res = await fetch('/api/generate-passage', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ word_ids: targetWords.map((w) => w.id) }),
+        body: JSON.stringify({
+          word_ids: targetWords.map((w) => w.id),
+          university_id: universityId,
+        }),
       });
       const json = await res.json();
       if (!res.ok) {
@@ -253,11 +297,62 @@ export default function ArchiveTestPage() {
                       </label>
                       <PdfExportButton
                         targetId="passage-printable"
-                        fileName={`${set?.name ?? 'passage'}_長文問題`}
+                        fileName={`${set?.name ?? 'passage'}_長文問題${
+                          passage.university_name ? `_${passage.university_name}` : ''
+                        }`}
                       />
                     </>
                   )}
                 </div>
+              </div>
+
+              {/* 参考にする大学(過去問)の選択 */}
+              <div className="mb-3 rounded-xl bg-gray-50 p-3">
+                <p className="mb-2 text-xs font-semibold text-gray-600">参考にする大学の過去問</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => chooseUniversity(null)}
+                    className={`rounded-full px-3 py-1 text-xs font-medium ring-1 transition ${
+                      universityId === null
+                        ? 'bg-primary-600 text-white ring-primary-600'
+                        : 'bg-white text-gray-700 ring-gray-300 hover:ring-primary-400'
+                    }`}
+                  >
+                    指定なし
+                  </button>
+                  {universities.map((u) => {
+                    const empty = (u.exam_count ?? 0) === 0;
+                    const active = u.id === universityId;
+                    return (
+                      <button
+                        key={u.id}
+                        onClick={() => chooseUniversity(u.id)}
+                        disabled={empty}
+                        title={empty ? '過去問が未登録です' : undefined}
+                        className={`rounded-full px-3 py-1 text-xs font-medium ring-1 transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                          active
+                            ? 'bg-primary-600 text-white ring-primary-600'
+                            : 'bg-white text-gray-700 ring-gray-300 hover:ring-primary-400'
+                        }`}
+                      >
+                        {u.name}
+                        <span className={`ml-1 ${active ? 'text-primary-100' : 'text-gray-400'}`}>
+                          {u.exam_count ?? 0}
+                        </span>
+                      </button>
+                    );
+                  })}
+                  <Link href="/universities" className="text-xs text-primary-600 hover:underline">
+                    ＋ 過去問を登録・管理
+                  </Link>
+                </div>
+                <p className="mt-2 text-xs text-gray-400">
+                  {selectedUniversity
+                    ? `「${selectedUniversity.name}」の過去問${selectedUniversity.exam_count}件の中から数件を参考にして、その大学の出題傾向に近い長文を作ります(過去問そのものは使いません)。`
+                    : universities.length === 0
+                    ? '大学の過去問を登録すると、ここから選んで、その大学の出題傾向に近い長文を作れます。'
+                    : '大学を選ぶと、その大学の過去問を参考にした長文を作ります。'}
+                </p>
               </div>
 
               <p className="mb-2 text-xs text-gray-400">
@@ -275,6 +370,14 @@ export default function ArchiveTestPage() {
                     <b className="text-primary-700">{passage.used_count}語</b>を使って作成しました
                     <span className="text-xs text-gray-400">(本文から調べた目安です)</span>
                   </p>
+                  {passage.university_name && (
+                    <p className="mt-1 text-xs text-gray-500">
+                      参考にした過去問: {passage.university_name}
+                      {passage.reference_titles && passage.reference_titles.length > 0 && (
+                        <>({passage.reference_titles.join(' / ')})</>
+                      )}
+                    </p>
+                  )}
                   {passage.unused_word_ids && passage.unused_word_ids.length > 0 && (
                     <>
                       <p className="mt-1 text-xs text-gray-500">

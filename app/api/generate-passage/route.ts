@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { generateEnglishPassage } from '@/lib/gemini';
 import { currentUserId, isUuid, notFound, unauthorized } from '@/lib/userData';
+import { pickReferenceExams } from '@/lib/pastExams';
+
+// 過去問を参考にする分、プロンプトが長くなり生成にも時間がかかるため、実行時間の上限を広げておく
+export const maxDuration = 60;
 
 // --- 選択した単語のうち、本文で実際に使われたものを調べる(目安) ---
 // Geminiの申告(used_words)だけに頼らず、本文に単語(活用変化を含む)が現れるかを確認する。
@@ -48,13 +52,17 @@ export async function POST(req: NextRequest) {
   if (!userId) return unauthorized();
 
   const body = await req.json().catch(() => ({}));
-  const { word_ids } = body as { word_ids?: string[] };
+  const { word_ids, university_id } = body as { word_ids?: string[]; university_id?: string | null };
 
   if (!Array.isArray(word_ids) || word_ids.length === 0) {
     return NextResponse.json({ error: 'word_ids が必要です' }, { status: 400 });
   }
   if (!word_ids.every(isUuid)) {
     return NextResponse.json({ error: 'word_ids が不正です' }, { status: 400 });
+  }
+  // university_id は任意(指定なしなら、これまで通り過去問なしで作る)
+  if (university_id != null && !isUuid(university_id)) {
+    return NextResponse.json({ error: 'university_id が不正です' }, { status: 400 });
   }
 
   try {
@@ -75,9 +83,30 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // 大学が選ばれていれば、その大学の過去問(登録済みの中から無作為に数件)を参考資料にする
+    let reference: { universityName: string; exams: { title: string; content: string }[] } | undefined;
+    if (university_id) {
+      const picked = await pickReferenceExams(userId, university_id);
+      if (!picked) return notFound('大学が見つかりません');
+      if (picked.exams.length === 0) {
+        return NextResponse.json(
+          {
+            error: `「${picked.universityName}」の過去問が登録されていません。「過去問を登録・管理」から追加してください`,
+          },
+          { status: 400 }
+        );
+      }
+      reference = picked;
+    }
+
     const passage = await generateEnglishPassage(
-      words.map((w: any) => ({ word: w.word, mean: w.mean }))
+      words.map((w: any) => ({ word: w.word, mean: w.mean })),
+      reference
     );
+    if (reference) {
+      passage.university_name = reference.universityName;
+      passage.reference_titles = reference.exams.map((e, i) => e.title || `過去問${i + 1}`);
+    }
 
     // 選択した単語のうち、使われた数と、使われなかった単語(IDで返す)を付け足す
     const text = `${passage.title}\n${passage.passage}`;

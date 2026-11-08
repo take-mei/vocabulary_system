@@ -39,6 +39,7 @@ export default function NavHeader() {
         <nav className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 text-sm text-primary-700">
           <Link href="/stats" className="hover:underline">統計</Link>
           <Link href="/checked" className="hover:underline">★チェック</Link>
+          <Link href="/universities" className="hover:underline">過去問</Link>
           <Link href="/settings" className="hover:underline">設定</Link>
           {me?.role === 'admin' && (
             <Link href="/admin" className="hover:underline">管理者</Link>

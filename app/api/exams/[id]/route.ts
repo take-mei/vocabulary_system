@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { currentUserId, isUuid, notFound, unauthorized } from '@/lib/userData';
 import { MAX_EXAM_CHARS } from '@/lib/types';
+import { parseYear } from '@/lib/examYear';
 
-const COLUMNS = 'id, university_id, title, char_count, created_at';
+const COLUMNS = 'id, university_id, title, year, char_count, created_at, analysis, analyzed_at';
 
 // GET /api/exams/[id] … 本文つきで1件
 export async function GET(
@@ -36,7 +37,13 @@ export async function PUT(
   if (!isUuid(params.id)) return notFound('過去問が見つかりません');
 
   const body = await req.json().catch(() => ({}));
-  const update: { title?: string; content?: string } = {};
+  const update: {
+    title?: string;
+    content?: string;
+    year?: number | null;
+    analysis?: null;
+    analyzed_at?: null;
+  } = {};
 
   if (body.title !== undefined) {
     update.title = typeof body.title === 'string' ? body.title.trim().slice(0, 200) : '';
@@ -51,6 +58,16 @@ export async function PUT(
       );
     }
     update.content = content;
+    // 本文を変えたら、前の解析結果は古くなるので消す(解析し直す)
+    update.analysis = null;
+    update.analyzed_at = null;
+  }
+  if (body.year !== undefined) {
+    const year = parseYear(body.year);
+    if (year === undefined) {
+      return NextResponse.json({ error: '年は1900〜2100の整数(西暦)で入力してください' }, { status: 400 });
+    }
+    update.year = year;
   }
   if (Object.keys(update).length === 0) {
     return NextResponse.json({ error: '変更する内容がありません' }, { status: 400 });

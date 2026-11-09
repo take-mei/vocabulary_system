@@ -17,6 +17,7 @@
     "jspdf": "^2.5.2",
     "next": "14.2.35",
     "papaparse": "^5.4.1",
+    "pdfjs-dist": "3.11.174",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "recharts": "^2.12.7",
